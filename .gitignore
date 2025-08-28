@@ -1,0 +1,61 @@
+# Python
+__pycache__/
+*.py[cod]
+*.so
+*.egg
+*.egg-info/
+build/
+dist/
+.Python
+.venv
+venv/
+env/
+.env
+pip-log.txt
+pip-delete-this-directory.txt
+
+# IDEs
+.idea/
+.vscode/
+
+# OS generated files
+.DS_Store
+.Trashes
+Thumbs.db
+
+# Test and coverage
+htmlcov/
+.tox/
+.nox/
+.coverage
+.coverage.*
+.cache/
+.pytest_cache/
+
+# Jupyter Notebook
+.ipynb_checkpoints
+
+# Hugging Face
+# Cache directories for models, datasets, etc.
+# These can be very large and should not be committed.
+.cache/huggingface/
+hf_cache/
+transformers_cache/
+datasets_cache/
+accelerate_cache/
+
+# PyTorch/CUDA
+.cache/torch/
+
+# NVIDIA NeMo (if applicable)
+nemo_cache/
+nemo_experiments/
+
+# llama.cpp (if applicable)
+# Build artifacts, downloaded models
+llama.cpp/
+gguf_models/
+
+# Temporary files
+test.txt
+*.log

@@ -4,7 +4,7 @@
 
 Chào mừng bạn đến với dự án **Hệ Thống Trả Lời Điện Thoại Tự Động Qua AI Agent**! Đây là một giải pháp thực tế sử dụng trí tuệ nhân tạo (AI) để xử lý các cuộc gọi inbound trên nền tảng VoIP, giảm tải cho đội ngũ CSKH và mang đến trải nghiệm tự nhiên cho khách hàng. Hệ thống được xây dựng trên **Asterisk 20** (đóng gói bởi **VitalPBX**) chạy trên **Debian 12**, tận dụng sức mạnh của **8 GPU NVIDIA V100 (32GB VRAM)** để đảm bảo hiệu suất ổn định và khả năng mở rộng.
 
-- **🤖 Công nghệ AI cốt lõi**: Sử dụng **Llama 4 Maverick** (`unsloth/Llama-4-Maverick-17B-128E-Instruct-unsloth-bnb-4bit`) từ Unsloth trên Hugging Face, ưu tiên hỗ trợ **tiếng Việt** và **tiếng Anh**, với khả năng mở rộng đến 10 ngôn ngữ khác (Arabic, French, German, Hindi, Indonesian, Italian, Portuguese, Spanish, Tagalog, Thai) sau khi tối ưu hóa.
+- **🤖 Công nghệ AI cốt lõi**: Sử dụng model NLP hiệu quả (hiện tại là Llama 4 Scout), ưu tiên hỗ trợ **tiếng Việt** và **tiếng Anh**, với khả năng mở rộng đến 10 ngôn ngữ khác (Arabic, French, German, Hindi, Indonesian, Italian, Portuguese, Spanish, Tagalog, Thai) sau khi tối ưu hóa.
 - **🎯 Mục tiêu**: Độ trễ end-to-end dưới 800ms, độ chính xác cao (WER < 10% cho STT, BLEU/ROUGE > 0.7 cho NLP), khả năng mở rộng cho hàng trăm cuộc gọi đồng thời ban đầu.
 - **🔗 Tích hợp mở**: Module CRM linh hoạt với placeholder API, sẵn sàng tích hợp với Zoho, Salesforce hoặc bất kỳ nền tảng nào sau khi quyết định.
 
@@ -21,7 +21,7 @@ Hệ thống kết hợp **agentic AI**, **emotion detection**, và **federated 
 
 ### Phạm Vi
 - **✅ Bao gồm**:
-  - AI components: STT (Faster-Whisper dựa trên Whisper-large-v3), NLP (Llama 4 Maverick, bắt đầu prototype với Llama 3 8B để test), TTS (Orpheus-TTS cho giọng tự nhiên và emotion-adjusted).
+  - AI components: STT (Google Cloud Speech-to-Text API), NLP (Llama 4 Scout), TTS (Orpheus-TTS cho giọng tự nhiên và emotion-adjusted).
   - Tích hợp VoIP qua AGI/ARI.
   - Module CRM mở với placeholder API để tra cứu thông tin.
   - Dashboard cơ bản (Streamlit hoặc Flask) cho monitoring latency và accuracy.
@@ -31,84 +31,85 @@ Hệ thống kết hợp **agentic AI**, **emotion detection**, và **federated 
   - Dataset CSKH (lịch sử chat/cuộc gọi) với ít nhất 50.000 mẫu sẵn có hoặc thu thập bổ sung.
   - Tích hợp CRM cụ thể sẽ thực hiện sau khi chọn nền tảng.
 
-## 🏗 Kiến Trúc Hệ Thống
+## 🏗 Kiến Trúc Hệ Thống (Đã cập nhật)
 
-Hệ thống được thiết kế **modular** để đảm bảo tính linh hoạt, dễ bảo trì và mở rộng. Dưới đây là luồng dữ liệu chính (ASCII art):
+Kiến trúc được đơn giản hóa để phản ánh tình trạng hiện tại của dự án và các quyết định mới.
+
+- **Hardware**: Server với 8 GPU NVIDIA V100 (32GB VRAM).
+- **VoIP**: VitalPBX / Asterisk 20.
+- **AGI Script**: `src/agi/agi_handler.py` là trái tim của hệ thống, điều phối toàn bộ luồng xử lý.
+
+Luồng dữ liệu thực tế như sau:
 
 ```
-📞 Cuộc gọi Inbound
+📞 Cuộc gọi Inbound (VitalPBX)
    ↓
-🎙 Asterisk ghi âm (5-30s, streaming realtime)
+🎙 Asterisk Dialplan thực thi AGI script
    ↓
-🔊 STT (Faster-Whisper) → Text (tiếng Việt/Anh)
+🐍 AGI Script (`agi_handler.py`)
+   1. Ghi âm giọng nói người dùng.
+   2. Gửi âm thanh đến Google STT API.
+   3. Nhận lại văn bản.
+   4. Gửi văn bản đến NLP Server (API tại http://localhost:8000).
+   5. Nhận lại văn bản trả lời.
+   6. Gọi API của TTS để chuyển thành giọng nói.
+   7. Phát lại âm thanh cho người dùng.
    ↓
-🧠 NLP (Llama 4 Maverick hoặc Llama 3 8B) + MCP (CRM mở) + Emotion Detection
-   ↓
-📝 Phản hồi thông minh
-   ↓
-🎵 TTS (Orpheus-TTS) → Audio (emotion-adjusted)
-   ↓
-🔊 Playback qua Asterisk
-   ↓
-🔄 Nếu phức tạp: Chuyển nhân viên/SMS/Email (handover seamless)
+👋 Kết thúc cuộc gọi
 ```
+
+### Giải thích chi tiết về luồng hoạt động của AGI
+
+Về cốt lõi, **AGI (Asterisk Gateway Interface)** là một "cây cầu" cho phép Asterisk tạm dừng xử lý một cuộc gọi và **trao quyền điều khiển cuộc gọi đó cho một script bên ngoài**. Luồng hoạt động của nó trong dự án này như sau:
+
+1.  **Gọi đến Dialplan**: Một cuộc gọi đi vào hệ thống VitalPBX/Asterisk.
+2.  **Thực thi lệnh `AGI()`**: Trong dialplan (được cấu hình qua giao diện web VitalPBX), Asterisk được lệnh thực thi ứng dụng `AGI()` và trỏ đến script của chúng ta.
+3.  **Chạy Script Wrapper**: Asterisk tìm và chạy script `voip_ai_agent.sh` trong thư mục `/var/lib/asterisk/agi-bin/`.
+4.  **Kích hoạt môi trường Python**: Script wrapper này thiết lập `PYTHONPATH` và thực thi script logic chính là `src/agi/agi_handler.py`.
+5.  **Giao tiếp hai chiều**: Script Python bắt đầu một vòng lặp "nói chuyện" với Asterisk. Nó gửi các lệnh như `ANSWER`, `RECORD FILE`, `STREAM FILE` tới Asterisk và nhận lại kết quả. Trong quá trình này, nó cũng gọi tới các API của Google STT và Llama.
+6.  **Trả lại quyền điều khiển**: Khi script Python kết thúc, quyền điều khiển được trả lại cho Asterisk để kết thúc cuộc gọi (`Hangup()`).
 
 ### Các Thành Phần Chính
-- **🖥 AI Backend**:
-  - Chạy trong **Docker container** trên 8 GPU V100 (multi-GPU, device_map='auto').
-  - STT: **Faster-Whisper** (optimized version of Whisper-large-v3 cho realtime, hỗ trợ tiếng Việt/Anh, multilingual).
-  - NLP: **Llama 4 Maverick 4-bit** (Unsloth, ~20-25GB VRAM, fine-tune cho CSKH; prototype với Llama 3 8B để giảm latency).
-  - TTS: **Orpheus-TTS** (giọng tự nhiên, human-like emotion, zero-shot multilingual cloning).
-- **📡 VoIP Integration**:
-  - AGI script Python kết nối Asterisk với AI, sử dụng streaming để giảm latency.
-  - ARI (WebSocket) cho low-latency, tích hợp Pipecat cho voice agent orchestration.
-- **🔗 CRM Module Mở**:
-  - Class `CRMIntegrator` với config file/env vars, placeholder API để tra cứu.
-  - Dễ switch giữa Zoho, Salesforce hoặc nền tảng khác.
-- **🛠 Công nghệ hỗ trợ**:
-  - **LangGraph**: Orchestration agentic AI (multi-agent flow).
-  - **Unsloth/llama.cpp**: Quantization 4-bit, tối ưu GPU.
-  - **vLLM/TensorRT-LLM**: Optimized inference cho LLM trên GPU V100.
-  - **Pipecat**: Full-stack framework cho voice agents (STT/TTS integration).
-  - **Federated learning**: Optional cho bảo mật dữ liệu dài hạn.
+- **🖥️ AI Backend**:
+  - **STT**: **Google Cloud Speech-to-Text API**. Yêu cầu file credentials được cấu hình qua biến môi trường `GOOGLE_APPLICATION_CREDENTIALS`.
+  - **NLP**: Model **`unsloth/Llama-4-Scout-17B-16E-Instruct-unsloth-bnb-4bit`**, được phục vụ qua một API tương thích OpenAI (ví dụ: vLLM) tại `http://localhost:8000`.
+  - **TTS**: Một service Text-to-Speech (ví dụ: Google TTS, Piper, v.v.). Code hiện tại trong `src/tts/generate_audio.py` cần được kiểm tra và hoàn thiện.
+- **📡 Tích hợp VoIP**:
+  - Sử dụng **AGI (Asterisk Gateway Interface)**. Script `src/agi/agi_handler.py` đã bao gồm logic giao tiếp với Asterisk.
 
-### Metrics Kỹ Thuật
-- **🔊 STT**: Word Error Rate (WER) < 10%.
-- **🧠 NLP**: BLEU/ROUGE > 0.7.
-- **⏱ Latency**: End-to-end < 800ms (target thực tế dựa trên benchmarks 2025).
+## 🚀 Kế Hoạch Hành Động (Đã cập nhật)
 
-## 🚀 Các Giai Đoạn Phát Triển
+Dựa trên code đã có, kế hoạch được điều chỉnh để tập trung vào việc "lắp ráp" và đưa hệ thống vào hoạt động.
 
-Dự án chia thành 5 giai đoạn để đảm bảo triển khai có hệ thống:
+### Giai đoạn 1: Cài đặt và Cấu hình Môi trường (Hành động ngay)
 
-1. **📝 Nghiên Cứu Và Thiết Kế**:
-   - Thu thập yêu cầu kỹ thuật (dataset, ngôn ngữ).
-   - Thiết kế kiến trúc AI, module CRM mở (placeholder API).
-   - So sánh Llama 4 Maverick với các variant khác, chọn Orpheus-TTS cho TTS và Faster-Whisper cho STT.
-   - **Output**: Tài liệu thiết kế, sơ đồ kiến trúc.
+1.  **Cài đặt Dependencies**: Chạy `pip install -r requirements.txt` để cài đặt tất cả các thư viện Python cần thiết.
+2.  **Cấu hình Google Cloud**:
+    *   Tạo một Service Account trên Google Cloud Platform với quyền truy cập Speech-to-Text API.
+    *   Tải file credentials JSON về server.
+    *   Đặt biến môi trường: `export GOOGLE_APPLICATION_CREDENTIALS="/path/to/your/keyfile.json"`.
+3.  **Chuẩn bị file âm thanh**: Tạo các file âm thanh (`welcome.wav`, `stt_error.wav`, `nlp_error.wav`, `tts_error.wav`) và đặt chúng vào thư mục sounds của Asterisk (ví dụ: `/var/lib/asterisk/sounds/en`).
 
-2. **🛠 Cài Đặt Và Prototype**:
-   - Cài đặt Debian 12, VitalPBX/Asterisk, CUDA, Unsloth, Hugging Face, vLLM, Pipecat.
-   - Xây prototype STT/NLP/TTS với Llama 3 8B, tích hợp AGI script.
-   - Test module CRM mở với mock API, thêm dashboard cơ bản cho monitoring.
-   - **Output**: Prototype hoạt động, báo cáo latency thực tế.
+### Giai đoạn 2: Lựa chọn và Triển khai NLP Server
 
-3. **🤖 Phát Triển Core AI**:
-   - STT realtime với Faster-Whisper, NLP fine-tune Llama 4 Maverick qua vLLM, TTS emotion-adjusted với Orpheus-TTS.
-   - Tích hợp LangGraph, MCP, emotion detection, Pipecat cho voice flow.
-   - **Output**: Hệ thống đầy đủ, sẵn sàng test.
+1.  **Đánh giá và Chọn Model NLP**: Dựa trên yêu cầu về ngôn ngữ (tiếng Việt), tốc độ và độ chính xác, hãy chọn một model từ Hugging Face (ví dụ: một model từ VinAI, FPT AI, hoặc một model Llama đã được fine-tune).
+2.  **Chạy NLP Server**: Sử dụng `vLLM` hoặc một công cụ tương tự để triển khai model đã chọn thành một API service tại `http://localhost:8000`. AGI script đã sẵn sàng để gọi đến endpoint này.
 
-4. **⚙ Test Và Tối Ưu Hóa**:
-   - Unit/end-to-end tests (WER, BLEU/ROUGE, latency).
-   - Tối ưu GPU (4-bit quantization, multi-GPU với TensorRT-LLM, fallback cloud nếu cần).
-   - Đảm bảo hỗ trợ tiếng Việt/Anh trước, mở rộng đa ngôn ngữ sau.
-   - **Output**: Hệ thống tối ưu, báo cáo test.
+### Giai đoạn 3: Tích hợp và Kiểm thử End-to-End
 
-5. **🌐 Triển Khai Và Bảo Trì**:
-   - Deploy với Docker/Kubernetes.
-   - Thiết lập monitoring (latency, accuracy).
-   - Hỗ trợ tích hợp CRM cụ thể nếu được chọn.
-   - **Output**: Hệ thống sản xuất, kế hoạch bảo trì.
+1.  **Triển khai AGI Script**:
+    *   Copy toàn bộ thư mục dự án (`voip-ai-agent`) vào một vị trí hợp lý trên server (ví dụ: `/opt/voip-ai-agent`).
+    *   Tạo một "entrypoint" script trong thư mục `agi-bin` của Asterisk (`/var/lib/asterisk/agi-bin/`) để gọi đến `src/agi/agi_handler.py` và đảm bảo `PYTHONPATH` được thiết lập đúng.
+    *   Cấp quyền thực thi (`chmod +x`) cho script đó.
+2.  **Cấu hình Asterisk Dialplan**: Chỉnh sửa dialplan trong VitalPBX để khi có cuộc gọi đến, nó sẽ thực thi AGI script của bạn.
+3.  **Kiểm thử**: Thực hiện cuộc gọi đến hệ thống và kiểm tra toàn bộ luồng hoạt động. Theo dõi file log `agi_handler.log` để gỡ lỗi.
+
+### Giai đoạn 4: Tối ưu và Mở rộng (Tương lai)
+
+-   Fine-tune model NLP với dữ liệu CSKH của riêng bạn.
+-   Tối ưu hóa độ trễ của từng thành phần (STT, NLP, TTS).
+-   Đóng gói ứng dụng bằng Docker/Kubernetes để dễ dàng quản lý và scale.
+-   Tích hợp module CRM như kế hoạch ban đầu.
 
 ## 💻 Tài Nguyên Cần Thiết
 
@@ -139,7 +140,7 @@ Dự án chia thành 5 giai đoạn để đảm bảo triển khai có hệ th�
 ## 🌈 Roadmap Dài Hạn
 
 - **📅 Ngắn Hạn**:
-  - Cập nhật Llama 4 Maverick từ Unsloth.
+  - Cập nhật các phiên bản Llama 4 Scout từ Unsloth.
   - Tích hợp federated learning cho privacy nếu cần.
 - **📆 Trung Hạn**:
   - Kích hoạt module CRM (Zoho/Salesforce).

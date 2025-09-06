@@ -5,31 +5,9 @@ import requests
 from loguru import logger
 from asterisk.agi import AGI
 
-# Giả lập các module chức năng, chúng ta sẽ tạo chúng sau
-# from ..stt.transcribe import transcribe_google_cloud
-# from ..tts.generate_audio import generate_audio
-
-# --- Placeholder Functions (Giả lập) ---
-# Thay thế các hàm này bằng việc gọi đến module thực tế của bạn
-def transcribe_google_cloud(audio_path):
-    """Hàm giả lập cho STT."""
-    logger.info(f"STT: Giả lập chuyển đổi file {audio_path}")
-    # Trong thực tế, bạn sẽ gọi API Google Speech-to-Text ở đây
-    # Để test, chúng ta trả về một câu text mẫu
-    return "Xin chào, tôi muốn hỏi về trạng thái đơn hàng"
-
-def generate_audio(text, audio_path):
-    """Hàm giả lập cho TTS."""
-    logger.info(f"TTS: Giả lập tạo audio cho text '{text}' tại {audio_path}")
-    # Trong thực tế, bạn sẽ gọi API TTS (VD: Indic Parler-TTS)
-    # Để test, chúng ta sẽ copy một file wav mẫu
-    # Bạn cần có sẵn file /tmp/sample.wav để code này chạy được
-    if os.path.exists("/tmp/sample.wav"):
-        os.system(f"cp /tmp/sample.wav {audio_path}")
-    else:
-        logger.warning("File /tmp/sample.wav không tồn tại để giả lập TTS.")
-    return True
-# --- End of Placeholder Functions ---
+# Import các module STT và TTS đã được cấu hình
+from ..stt.transcribe import transcribe_google_cloud
+from ..tts.generate_audio import generate_audio
 
 
 # Cấu hình logger

@@ -1,112 +1,186 @@
 #!/usr/bin/env python3
-import sys
-import os
-import requests
+# -*- coding: utf-8 -*-
+import sys, os, requests
 from loguru import logger
 from asterisk.agi import AGI
+from pydub import AudioSegment
 
-# Import các module STT và TTS đã được cấu hình
-from ..stt.transcribe import transcribe_google_cloud
-from ..tts.generate_audio import generate_audio
+# ===== Config =====
+NLP_API_URL = os.environ.get("NLP_API_URL", "http://localhost:8000/v1/chat/completions")
+NLP_MODEL = os.environ.get("NLP_MODEL", "unsloth/Llama-4-Scout-17B-16E-Instruct-unsloth-bnb-4bit")
+SAMPLE_RATE = 8000  # 8kHz telephony
+CHANNELS = 1        # mono
+WELCOME_PROMPT = "welcome"         # sounds/welcome.wav
+PLEASE_REPEAT = "please-repeat"    # sounds/please-repeat.wav (khuyến nghị tạo)
+ERROR_STT = "error-stt"            # sounds/error-stt.wav (khuyến nghị tạo)
+TTS_DIR = "/var/lib/asterisk/sounds/vi/custom"  # đã đúng cách anh làm
 
-
-# Cấu hình logger
+# ===== Logger =====
 logger.remove()
 logger.add(sys.stderr, level="INFO")
 logger.add("/tmp/agi_handler.log", rotation="10 MB", level="DEBUG")
 
-# Cấu hình API cho NLP
-NLP_API_URL = os.environ.get("NLP_API_URL", "http://localhost:8000/v1/chat/completions")
-
-def process_nlp(text_input):
-    """Gửi văn bản đến Llama 4 và nhận phản hồi."""
+# ===== NLP =====
+def process_nlp(text_input: str) -> str:
     if not text_input:
         return ""
-
     try:
         payload = {
-            "model": "unsloth/Llama-4-Scout-17B-16E-Instruct-unsloth-bnb-4bit",
-            "messages": [{"role": "user", "content": text_input}]
+            "model": NLP_MODEL,
+            "messages": [{"role": "user", "content": text_input}],
+            "temperature": 0.6,
+            "max_tokens": 220,
         }
-        logger.info(f"NLP: Gửi payload đến Llama 4: {payload}")
-        response = requests.post(NLP_API_URL, json=payload, timeout=30)
-        response.raise_for_status()
-        result = response.json()
-        assistant_response = result["choices"][0]["message"]["content"]
-        logger.info(f"NLP: Nhận phản hồi từ Llama 4: {assistant_response}")
-        return assistant_response
-    except requests.exceptions.RequestException as e:
-        logger.error(f"NLP: Lỗi gọi API: {e}")
-        return "Đã có lỗi xảy ra khi kết nối đến bộ xử lý ngôn ngữ."
-    except (KeyError, IndexError) as e:
-        logger.error(f"NLP: Lỗi xử lý JSON response: {e}")
-        return "Đã có lỗi xảy ra khi xử lý phản hồi từ AI."
+        logger.info(f"NLP → {NLP_API_URL} payload={payload}")
+        r = requests.post(NLP_API_URL, json=payload, timeout=30)
+        r.raise_for_status()
+        data = r.json()
+        reply = data["choices"][0]["message"]["content"]
+        logger.info(f"NLP ← {reply}\n") # Added newline for clarity
+        return reply
+    except Exception as e:
+        logger.exception(f"NLP error: {e}")
+        return "Xin lỗi, hệ thống NLP đang bận. Vui lòng thử lại."
 
+# ===== STT (Google sync) =====
+def stt_google_sync(wav_path: str, language: str = "vi-VN") -> str:
+    try:
+        from google.cloud import speech
+        client = speech.SpeechClient()
+        with open(wav_path, "rb") as f:
+            content = f.read()
+        audio = speech.RecognitionAudio(content=content)
+        config = speech.RecognitionConfig(
+            language_code=language,
+            enable_automatic_punctuation=True,
+            encoding=speech.RecognitionConfig.AudioEncoding.LINEAR16,
+            sample_rate_hertz=SAMPLE_RATE,
+        )
+        resp = client.recognize(config=config, audio=audio)
+        text = " ".join([r.alternatives[0].transcript for r in resp.results]).strip()
+        logger.info(f"STT ← {text}")
+        return text
+    except Exception as e:
+        logger.exception(f"STT error: {e}")
+        return ""
 
+# ===== TTS wrapper (dùng hàm của anh) =====
+def tts_to_vi_custom(text: str, basename: str) -> str:
+    """
+    Gọi TTS -> wav, resample 8k/mono/16-bit, lưu về /var/lib/asterisk/sounds/vi/custom/<basename>.wav
+    Trả về token tương đối 'vi/custom/<basename>' để AGI STREAM FILE.
+    """
+    from src.tts.generate_audio import generate_audio  # chính hàm của anh
+    os.makedirs(TTS_DIR, exist_ok=True)
+    tmp_out = f"/tmp/{basename}.wav"
+    final_out = os.path.join(TTS_DIR, f"{basename}.wav")
+
+    # 1) synth
+    generate_audio(text, tmp_out)
+
+    # 2) normalize format
+    audio = AudioSegment.from_wav(tmp_out)
+    audio = audio.set_frame_rate(SAMPLE_RATE).set_channels(CHANNELS).set_sample_width(2)
+    audio.export(final_out, format="wav")
+
+    # 3) quyền đọc (optional)
+    try:
+        import pwd, grp
+        uid = pwd.getpwnam("asterisk").pw_uid
+        gid = grp.getgrnam("asterisk").gr_gid
+        os.chown(final_out, uid, gid)
+    except Exception:
+        pass
+
+    return f"vi/custom/{basename}"
+
+# ===== Main AGI =====
 def main():
-    """Hàm chính điều khiển luồng hội thoại AGI."""
     agi = AGI()
-    unique_id = agi.get_variable('UNIQUEID')
-    logger.info(f"AGI handler started for call {unique_id}.")
+    unique_id = agi.get_variable('UNIQUEID') or "unknown"
+    logger.info(f"AGI start call={unique_id}")
 
     try:
         agi.answer()
-        agi.stream_file('welcome') # Phát lời chào (cần có file welcome.wav/.gsm trong sounds dir)
+        try:
+            agi.stream_file(WELCOME_PROMPT)
+        except Exception as e:
+            logger.warning(f"Welcome prompt missing or error: {e}")
 
-        # Vòng lặp hội thoại
         while True:
-            logger.info("Bắt đầu một lượt hội thoại mới.")
-            
-            # 1. Ghi âm giọng nói của người dùng
-            # Ghi âm vào file wav, dừng khi có khoảng lặng 2 giây hoặc người dùng bấm phím #
-            user_audio_path = f"/tmp/{unique_id}_user_input.wav"
-            # AGI record file không cần phần mở rộng, nó sẽ tự thêm
-            # Nó cũng cần file tồn tại trước. Hãy tạo file rỗng.
-            open(user_audio_path, 'a').close()
-            
-            # Sử dụng lệnh `RECORD FILE` của AGI
-            # Ghi âm file wav, thoát bằng phím #, timeout 5s, có phát beep, khoảng lặng 2s để dừng
-            result = agi.record_file(user_audio_path[:-4], 'wav', '#', 5000, beep=True, silence=2)
-            
-            if result.get('result') == '0':
-                logger.info("Người dùng không nói gì hoặc đã gác máy.")
+            logger.info("=== New turn ===")
+            rec_base = f"/var/spool/asterisk/recordings/{unique_id}_user"
+            os.makedirs(os.path.dirname(rec_base), exist_ok=True)
+
+            # RECORD FILE <filename> <format> <escape_digits> [timeout(ms)] [offset_samples] [BEEP] [s=silence]
+            try:
+                agi.record_file(rec_base, 'wav', '#', 7000, beep=True, silence=2)
+            except Exception as e:
+                logger.exception(f"record_file error: {e}")
                 break
 
-            # 2. Chuyển đổi giọng nói thành văn bản (STT)
-            transcribed_text = transcribe_google_cloud(user_audio_path)
-            logger.info(f"STT: {transcribed_text}")
-
-            if not transcribed_text.strip():
-                logger.info("STT không nhận diện được văn bản. Lặp lại.")
-                agi.stream_file('please_repeat') # Yêu cầu nhắc lại
+            wav_in = rec_base + ".wav"
+            if not os.path.exists(wav_in) or os.path.getsize(wav_in) < 1000:
+                logger.info("No/too-small recorded audio. Ask to repeat.")
+                try:
+                    agi.stream_file(PLEASE_REPEAT)
+                except Exception:
+                    pass
                 continue
 
-            # 3. Xử lý văn bản bằng NLP (Llama 4)
-            assistant_response_text = process_nlp(transcribed_text)
+            # Normalize input wav → 8k/mono/16-bit
+            try:
+                seg = AudioSegment.from_wav(wav_in)
+                seg = seg.set_frame_rate(SAMPLE_RATE).set_channels(CHANNELS).set_sample_width(2)
+                seg.export(wav_in, format="wav")
+            except Exception as e:
+                logger.exception(f"Normalize wav error: {e}")
+                try:
+                    agi.stream_file(ERROR_STT)
+                except Exception:
+                    pass
+                continue
 
-            # Điều kiện kết thúc hội thoại
-            if "tạm biệt" in assistant_response_text.lower():
-                logger.info("NLP quyết định kết thúc hội thoại.")
-                # Chúng ta vẫn sẽ generate audio cho lời chào tạm biệt
-            
-            # 4. Chuyển đổi văn bản phản hồi thành giọng nói (TTS)
-            assistant_audio_path = f"/tmp/{unique_id}_assistant_response.wav"
-            generate_audio(assistant_response_text, assistant_audio_path)
+            # STT
+            user_text = stt_google_sync(wav_in, language="vi-VN")
+            if not user_text:
+                logger.info("Empty STT result. Ask to repeat.")
+                try:
+                    agi.stream_file(PLEASE_REPEAT)
+                except Exception:
+                    pass
+                continue
 
-            # 5. Phát lại âm thanh cho người dùng
-            # AGI stream file không cần phần mở rộng nếu file nằm trong sound dir
-            # Nhưng với đường dẫn tuyệt đối, ta nên truyền cả đường dẫn
-            agi.stream_file(assistant_audio_path[:-4])
+            # NLP
+            reply_text = process_nlp(user_text)
 
-            # Nếu NLP muốn kết thúc, chúng ta thoát vòng lặp sau khi đã trả lời
-            if "tạm biệt" in assistant_response_text.lower():
+            # TTS → sounds/vi/custom/<basename>.wav
+            basename = f"{unique_id}_assistant_{abs(hash(reply_text))%10_000_000}"
+            token = tts_to_vi_custom(reply_text, basename)
+
+            # Play back
+            try:
+                agi.stream_file(token)
+            except Exception as e:
+                logger.exception(f"STREAM FILE error: {e}")
+                try:
+                    agi.stream_file("vm-sorry")
+                except Exception:
+                    pass
+
+            # Exit condition
+            if "tạm biệt" in reply_text.lower():
+                logger.info("Assistant requested to end call.")
                 break
 
     except Exception as e:
-        logger.error(f"Lỗi không mong muốn trong vòng lặp chính: {e}")
+        logger.exception(f"Main loop error: {e}")
     finally:
-        logger.info("Kết thúc AGI handler, gác máy.")
-        agi.hangup()
+        try:
+            agi.hangup()
+        except Exception:
+            pass
+        logger.info("AGI end.")
 
 if __name__ == "__main__":
     main()

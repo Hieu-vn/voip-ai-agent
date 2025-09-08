@@ -9,7 +9,7 @@ logger.remove()
 logger.add(sys.stderr, level="INFO")
 logger.add("/tmp/tts_generate_audio.log", rotation="10 MB", level="DEBUG")
 
-# ========== Configuration ========== 
+# ========== Configuration ==========
 TTS_MODEL_NAME = "facebook/mms-tts-vie"
 
 # ========== Model Loading and GPU Setup ==========

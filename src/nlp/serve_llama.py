@@ -1,5 +1,7 @@
 import sys
 import os
+import uuid
+from dataclasses import Field
 
 # Add the project root to sys.path for absolute imports
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..")))

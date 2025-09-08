@@ -1,0 +1,27 @@
+# Application configuration for VoIP AI Agent
+# Use this file for paths, API keys (if not in .env), and other settings.
+
+# Example structure:
+# stt:
+#   google_cloud_credentials_path: /path/to/your/google_cloud_key.json
+# nlp:
+#   model_path: /data/voip-ai-agent/models/nlp/llama4_scout
+#   fine_tuned_dataset: /data/voip-ai-agent/data/processed/vietnamese_cskh_dataset.json
+# tts:
+#   model_path: /data/voip-ai-agent/models/tts/indic_parler_tts
+# asterisk:
+#   agi_port: 4573
+#   ari_url: http://localhost:8088
+#   ari_username: asterisk
+#   ari_password: mysecret
+# crm:
+#   type: zoho
+#   api_key: your_zoho_api_key
+#   base_url: https://www.zohoapis.com
+
+# ARI Configuration (loaded from .env)
+ari:
+  url: ${ARI_URL:-http://localhost:8088/}
+  username: ${ARI_USERNAME:-asterisk}
+  password: ${ARI_PASSWORD:-asterisk}
+  app_name: ${ARI_APP_NAME:-voip-ai-agent}

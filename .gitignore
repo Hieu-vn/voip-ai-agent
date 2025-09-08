@@ -44,6 +44,10 @@ transformers_cache/
 datasets_cache/
 accelerate_cache/
 
+# Unsloth
+unsloth_compiled_cache/
+src/nlp/unsloth_compiled_cache/
+
 # PyTorch/CUDA
 .cache/torch/
 
@@ -59,3 +63,13 @@ gguf_models/
 # Temporary files
 test.txt
 *.log
+
+# Project specific ignores
+# Ignore data, models, and downloaded files
+/data/
+/models/
+/manual_model_download/
+
+# Ignore media files
+*.wav
+*.mp3

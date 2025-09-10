@@ -25,3 +25,24 @@ ari:
   username: ${ARI_USERNAME:-asterisk}
   password: ${ARI_PASSWORD:-asterisk}
   app_name: ${ARI_APP_NAME:-voip-ai-agent}
+
+# Cấu hình Speech Adaptation để cải thiện độ chính xác của STT
+speech_adaptation:
+  default:
+    # Các cụm từ cần gợi ý cho STT để tăng độ chính xác
+    # Ví dụ: tên công ty, tên sản phẩm, thuật ngữ chuyên ngành
+    phrase_hints:
+      - "tổng đài AI"
+      - "công ty Viễn Thông A"
+      - "sản phẩm Bphone"
+      - "gói cước SuperNet"
+    # Mức độ ưu tiên cho các cụm từ gợi ý (từ 1.0 đến 20.0)
+    boost: 15.0
+    # Bật/tắt tự động thêm dấu câu
+    enable_automatic_punctuation: true
+
+  # Bạn có thể thêm các context khác ở đây, ví dụ:
+  # sales_campaign_q1:
+  #   phrase_hints: ["khuyến mãi", "giảm giá", "miễn phí vận chuyển"]
+  #   boost: 12.0
+  #   enable_automatic_punctuation: true

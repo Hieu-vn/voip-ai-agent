@@ -1,3 +1,4 @@
 ari-py
 aiohttp
 python-dotenv
+pydub

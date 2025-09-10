@@ -4,7 +4,6 @@ import logging
 
 def load_config():
     """Tải cấu hình từ file YAML và biến môi trường."""
-    # Đường dẫn đến file config gốc
     config_path = os.path.join(os.path.dirname(__file__), '..', 'config', 'app_config.yaml')
     
     try:
@@ -19,7 +18,7 @@ def load_config():
         logging.error(f"Lỗi khi đọc file cấu hình: {e}")
         config = {}
 
-    # Load ARI config, ưu tiên biến môi trường
+    # Load ARI config
     ari_config = config.get('ari', {})
     ARI_URL = os.getenv('ARI_URL', ari_config.get('url', 'http://localhost:8088/'))
     ARI_USERNAME = os.getenv('ARI_USERNAME', ari_config.get('username', 'asterisk'))
@@ -29,7 +28,10 @@ def load_config():
     # Load Speech Adaptation config
     speech_adaptation_config = config.get('speech_adaptation', {})
 
-    # Load các cấu hình khác
+    # Load TTS config
+    tts_config = config.get('tts', {})
+
+    # Load other configs
     language_code = os.getenv("LANGUAGE_CODE", config.get('language_code', "vi-VN"))
 
     return {
@@ -38,6 +40,7 @@ def load_config():
         "ARI_PASSWORD": ARI_PASSWORD,
         "ARI_APP_NAME": ARI_APP_NAME,
         "SPEECH_ADAPTATION_CONFIG": speech_adaptation_config,
+        "TTS_CONFIG": tts_config,
         "LANGUAGE_CODE": language_code
     }
 
@@ -50,8 +53,11 @@ ARI_USERNAME = _config["ARI_USERNAME"]
 ARI_PASSWORD = _config["ARI_PASSWORD"]
 ARI_APP_NAME = _config["ARI_APP_NAME"]
 SPEECH_ADAPTATION_CONFIG = _config["SPEECH_ADAPTATION_CONFIG"]
+TTS_CONFIG = _config["TTS_CONFIG"]
 LANGUAGE_CODE = _config["LANGUAGE_CODE"]
 
 logging.info("Đã tải cấu hình ứng dụng thành công.")
 if SPEECH_ADAPTATION_CONFIG:
     logging.info(f"Đã tải {len(SPEECH_ADAPTATION_CONFIG)} context cho Speech Adaptation.")
+if TTS_CONFIG:
+    logging.info(f"Đã tải cấu hình TTS với {len(TTS_CONFIG.get('voices', {}))} giọng nói.")

@@ -1,87 +1,109 @@
 import logging
+import json
+import time
+from typing import TypedDict, Annotated, Sequence
+from langchain_core.messages import BaseMessage, HumanMessage
+from langchain_openai import ChatOpenAI
+from langgraph.graph import StateGraph, END
+
 from src.core.nlp_llm_client import LLMClient
+from src.utils.guardrails import redact_pii, unredact_pii
+from src.utils.metrics import NLP_LATENCY_SECONDS, LLM_ERRORS_TOTAL
+from src.utils.tracing import tracer
 
-# Placeholder for LangGraph and MCP
-# In a real implementation, you would import LangGraph components here
-# and define your tools for MCP (Model Context Protocol).
+# --- Agent State Definition ---
+class AgentState(TypedDict):
+    messages: Annotated[Sequence[BaseMessage], lambda x, y: x + y]
 
+# --- Simplified Agent Graph (No Tools) ---
+class LangGraphAgent:
+    def __init__(self, llm_client_config: dict):
+        self.llm = ChatOpenAI(
+            model=llm_client_config['llama_model'],
+            api_key=llm_client_config['openai_api_key'],
+            base_url=llm_client_config['openai_base_url'],
+            temperature=0.3,
+            streaming=True
+        )
+        self.graph = self._build_graph()
+
+    def _build_graph(self):
+        workflow = StateGraph(AgentState)
+        workflow.add_node("agent", self._call_model)
+        workflow.set_entry_point("agent")
+        workflow.add_edge("agent", END)
+        return workflow.compile()
+
+    async def _call_model(self, state: AgentState):
+        """Node: Calls the language model."""
+        logging.debug("AGENT GRAPH: Calling model (no tools)")
+        response = await self.llm.ainvoke(state["messages"])
+        return {"messages": [response]}
+
+# --- NLPModule Wrapper ---
 class NLPModule:
     def __init__(self, openai_base_url: str, openai_api_key: str, llama_model: str):
-        self.llm_client = LLMClient(openai_base_url, openai_api_key, llama_model)
-        # Initialize LangGraph agent here
-        # self.agent = Agent(self.llm_client, tools=[...])
-
-    def _detect_emotion(self, text: str) -> str:
-        # Placeholder for emotion detection logic
-        # This could use a Hugging Face sentiment model
-        if "vui" in text.lower() or "tốt" in text.lower():
-            return "positive"
-        elif "buồn" in text.lower() or "không hài lòng" in text.lower():
-            return "negative"
-        else:
-            return "neutral"
-
-    def _get_intent(self, text: str) -> str:
-        """
-        Xác định ý định của người dùng dựa trên từ khóa.
-        Đây là một trình giữ chỗ (placeholder), có thể được thay thế bằng mô hình NLU trong tương lai.
-        """
-        text_lower = text.lower()
-        # Các từ khóa đơn giản để nhận diện ý định kết thúc cuộc trò chuyện
-        end_keywords = ["tạm biệt", "kết thúc", "cảm ơn", "vậy thôi"]
-        if any(keyword in text_lower for keyword in end_keywords):
-            return "end_conversation"
-        
-        # Có thể thêm các nhận diện ý định khác ở đây
-        # ví dụ: if "đơn hàng" in text_lower: return "check_order_status"
-        
-        return "continue_conversation"
-
-    def process_user_input(self, user_text: str, history: list = None) -> dict:
-        logging.info(f"NLP: Đang xử lý: '{user_text}'")
-
-        # Step 1: Emotion Detection
-        emotion = self._detect_emotion(user_text)
-        logging.info(f"NLP: Cảm xúc phát hiện: {emotion}")
-
-        # Step 2: Prepare messages for LLM
-        messages = []
-        if history:
-            messages.extend(history)
-        messages.append({"role": "user", "content": user_text})
-
-        # Step 3: Call LLM (or LangGraph agent)
-        try:
-            bot_response = self.llm_client.chat_completion(messages=messages)
-        except Exception as e:
-            logging.error(f"NLP: Lỗi khi gọi LLM: {e}")
-            bot_response = "Xin lỗi, hệ thống đang bận. Vui lòng thử lại sau."
-
-        logging.info(f"NLP: Phản hồi từ LLM: '{bot_response}'")
-
-        # Step 4: Xác định ý định để kiểm soát luồng hội thoại
-        intent = self._get_intent(user_text)
-        logging.info(f"NLP: Ý định phát hiện: '{intent}'")
-
-        # Step 5: Cấu trúc phản hồi cuối cùng
-        response_obj = {
-            "response_text": bot_response,
-            "intent": intent,
-            "emotion": emotion
+        llm_config = {
+            'openai_base_url': openai_base_url,
+            'openai_api_key': openai_api_key,
+            'llama_model': llama_model
         }
+        self.agent = LangGraphAgent(llm_config)
+        self.llm_client = LLMClient(openai_base_url, openai_api_key, llama_model)
 
-        logging.info(f"NLP: Phản hồi có cấu trúc: {response_obj}")
-        return response_obj
+    async def close_client_session(self):
+        await self.llm_client.close_session()
 
-# --- Placeholder for MCP Tools (CRM Integration) ---
-# These functions would be passed to the LangGraph agent as tools
+    @NLP_LATENCY_SECONDS.time()
+    async def process_user_input(self, user_text: str, history: list = None) -> dict:
+        logging.info(f"NLP Agent: Input gốc: '{user_text}'")
+        redacted_text, pii_map = redact_pii(user_text)
+        if pii_map:
+            logging.info(f"NLP Agent: Input đã lọc PII: '{redacted_text}'")
 
-def get_order_status(order_id: str) -> str:
-    logging.info(f"MCP Tool: Tra cứu trạng thái đơn hàng {order_id}")
-    # In a real scenario, this would call src/crm_integration/zoho_crm.py or salesforce_crm.py
-    return f"Trạng thái đơn hàng {order_id}: Đang vận chuyển."
+        messages = history or []
+        messages.append(HumanMessage(content=redacted_text))
 
-def update_customer_info(customer_id: str, new_info: dict) -> str:
-    logging.info(f"MCP Tool: Cập nhật thông tin khách hàng {customer_id} với {new_info}")
-    # In a real scenario, this would call src/crm_integration/zoho_crm.py or salesforce_crm.py
-    return f"Thông tin khách hàng {customer_id} đã được cập nhật."
+        try:
+            final_state = await self.agent.graph.ainvoke({"messages": messages})
+            bot_response_raw = final_state["messages"][-1].content
+        except Exception as e:
+            LLM_ERRORS_TOTAL.labels(type='agent_error').inc()
+            logging.error(f"NLP Agent: Lỗi khi chạy graph: {e}", exc_info=True)
+            bot_response_raw = "Xin lỗi, tôi đang gặp sự cố nội bộ."
+
+        final_bot_response = unredact_pii(bot_response_raw, pii_map)
+        logging.info(f"NLP Agent: Phản hồi cuối cùng: '{final_bot_response}'")
+        intent = "end_conversation" if any(kw in user_text.lower() for kw in ["tạm biệt", "kết thúc"]) else "continue_conversation"
+        return {"response_text": final_bot_response, "intent": intent, "emotion": "neutral"}
+
+    async def streaming_process_user_input(self, user_text: str, history: list = None):
+        with tracer.start_as_current_span("nlp.streaming_process") as span:
+            span.set_attribute("user.input.length", len(user_text))
+            start_time = time.time()
+            try:
+                logging.info(f"NLP Agent (Streaming): Đang xử lý: '{user_text}'")
+                redacted_text, pii_map = redact_pii(user_text)
+                if pii_map:
+                    logging.info(f"NLP Agent (Streaming): Input đã lọc PII: '{redacted_text}'")
+
+                messages = history or []
+                messages.append(HumanMessage(content=redacted_text))
+
+                async for event in self.agent.graph.astream_events({"messages": messages}, version="v1"):
+                    kind = event["event"]
+                    if kind == "on_chat_model_stream":
+                        chunk = event["data"].get("chunk")
+                        if chunk:
+                            content = chunk.content
+                            if content:
+                                if "<!-- LỖI TIMEOUT -->" in content:
+                                    LLM_ERRORS_TOTAL.labels(type='timeout').inc()
+                                elif "<!-- LỖI KẾT NỐI -->" in content:
+                                    LLM_ERRORS_TOTAL.labels(type='client_error').inc()
+                                yield content
+            finally:
+                duration = time.time() - start_time
+                span.set_attribute("duration.seconds", duration)
+                NLP_LATENCY_SECONDS.observe(duration)
+                logging.info(f"NLP Agent (Streaming): Hoàn tất stream trong {duration:.2f} giây.")

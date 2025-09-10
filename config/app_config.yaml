@@ -46,3 +46,22 @@ speech_adaptation:
   #   phrase_hints: ["khuyến mãi", "giảm giá", "miễn phí vận chuyển"]
   #   boost: 12.0
   #   enable_automatic_punctuation: true
+
+# Cấu hình Text-to-Speech (TTS)
+tts:
+  # Giọng nói mặc định sẽ được sử dụng nếu không có chỉ định nào khác
+  default_voice: "female_a"
+  
+  # Thư mục để lưu các file audio đã được cache
+  # Đảm bảo thư mục này tồn tại và Asterisk có quyền ghi vào
+  cache_dir: "/tmp/tts_cache"
+  
+  # Tốc độ nói mặc định (1.0 là bình thường)
+  speaking_rate: 1.0
+  
+  # Danh sách các giọng nói có sẵn
+  voices:
+    female_a: "vi-VN-Wavenet-A"
+    male_b: "vi-VN-Wavenet-B"
+    female_c: "vi-VN-Wavenet-C"
+    male_d: "vi-VN-Wavenet-D"

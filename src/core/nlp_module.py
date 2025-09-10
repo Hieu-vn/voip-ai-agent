@@ -21,7 +21,23 @@ class NLPModule:
         else:
             return "neutral"
 
-    def process_user_input(self, user_text: str, history: list = None) -> str:
+    def _get_intent(self, text: str) -> str:
+        """
+        Xác định ý định của người dùng dựa trên từ khóa.
+        Đây là một trình giữ chỗ (placeholder), có thể được thay thế bằng mô hình NLU trong tương lai.
+        """
+        text_lower = text.lower()
+        # Các từ khóa đơn giản để nhận diện ý định kết thúc cuộc trò chuyện
+        end_keywords = ["tạm biệt", "kết thúc", "cảm ơn", "vậy thôi"]
+        if any(keyword in text_lower for keyword in end_keywords):
+            return "end_conversation"
+        
+        # Có thể thêm các nhận diện ý định khác ở đây
+        # ví dụ: if "đơn hàng" in text_lower: return "check_order_status"
+        
+        return "continue_conversation"
+
+    def process_user_input(self, user_text: str, history: list = None) -> dict:
         logging.info(f"NLP: Đang xử lý: '{user_text}'")
 
         # Step 1: Emotion Detection
@@ -35,16 +51,27 @@ class NLPModule:
         messages.append({"role": "user", "content": user_text})
 
         # Step 3: Call LLM (or LangGraph agent)
-        # In a full LangGraph implementation, this would be where the agent's graph is invoked
         try:
-            # For now, direct LLM call. Later, this will be agent.invoke()
             bot_response = self.llm_client.chat_completion(messages=messages)
         except Exception as e:
             logging.error(f"NLP: Lỗi khi gọi LLM: {e}")
             bot_response = "Xin lỗi, hệ thống đang bận. Vui lòng thử lại sau."
 
-        logging.info(f"NLP: Phản hồi: '{bot_response}'")
-        return bot_response
+        logging.info(f"NLP: Phản hồi từ LLM: '{bot_response}'")
+
+        # Step 4: Xác định ý định để kiểm soát luồng hội thoại
+        intent = self._get_intent(user_text)
+        logging.info(f"NLP: Ý định phát hiện: '{intent}'")
+
+        # Step 5: Cấu trúc phản hồi cuối cùng
+        response_obj = {
+            "response_text": bot_response,
+            "intent": intent,
+            "emotion": emotion
+        }
+
+        logging.info(f"NLP: Phản hồi có cấu trúc: {response_obj}")
+        return response_obj
 
 # --- Placeholder for MCP Tools (CRM Integration) ---
 # These functions would be passed to the LangGraph agent as tools

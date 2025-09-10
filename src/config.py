@@ -1,28 +1,57 @@
-
 import os
 import yaml
-from dotenv import load_dotenv
+import logging
 
-# Load .env file
-load_dotenv()
+def load_config():
+    """Tải cấu hình từ file YAML và biến môi trường."""
+    # Đường dẫn đến file config gốc
+    config_path = os.path.join(os.path.dirname(__file__), '..', 'config', 'app_config.yaml')
+    
+    try:
+        with open(config_path, 'r') as f:
+            config = yaml.safe_load(f)
+        if not config:
+            config = {}
+    except FileNotFoundError:
+        logging.error(f"File cấu hình không tìm thấy tại: {config_path}")
+        config = {}
+    except Exception as e:
+        logging.error(f"Lỗi khi đọc file cấu hình: {e}")
+        config = {}
 
-# Load YAML config
-config_path = os.path.join(os.path.dirname(__file__), "..", "config", "app_config.yaml")
-with open(config_path, 'r') as f:
-    config = yaml.safe_load(f)
+    # Load ARI config, ưu tiên biến môi trường
+    ari_config = config.get('ari', {})
+    ARI_URL = os.getenv('ARI_URL', ari_config.get('url', 'http://localhost:8088/'))
+    ARI_USERNAME = os.getenv('ARI_USERNAME', ari_config.get('username', 'asterisk'))
+    ARI_PASSWORD = os.getenv('ARI_PASSWORD', ari_config.get('password', 'asterisk'))
+    ARI_APP_NAME = os.getenv('ARI_APP_NAME', ari_config.get('app_name', 'voip-ai-agent'))
 
-# ARI Configuration
-ARI_URL = os.getenv('ARI_URL', config['ari']['url'])
-ARI_USERNAME = os.getenv('ARI_USERNAME', config['ari']['username'])
-ARI_PASSWORD = os.getenv('ARI_PASSWORD', config['ari']['password'])
-ARI_APP_NAME = os.getenv('ARI_APP_NAME', config['ari']['app_name'])
+    # Load Speech Adaptation config
+    speech_adaptation_config = config.get('speech_adaptation', {})
 
-# Other configurations (from app_config.yaml or environment variables)
-CONFIG = {
-    "openai_base_url": os.getenv("OPENAI_BASE_URL", config.get('openai_base_url', "http://127.0.0.1:8000/v1")),
-    "openai_api_key": os.getenv("OPENAI_API_KEY", config.get('openai_api_key', "sk-local")),
-    "llama_model": os.getenv("LLAMA_MODEL", config.get('llama_model', "llama-4")),
-    "language_code": os.getenv("LANGUAGE_CODE", config.get('language_code', "vi-VN")),
-    "sample_rate_hz": int(os.getenv("SAMPLE_RATE_HZ", config.get('sample_rate_hz', 8000))),
-    "sounds_dir": os.getenv("SOUNDS_DIR", config.get('sounds_dir', "/var/lib/asterisk/sounds/custom")),
-}
+    # Load các cấu hình khác
+    language_code = os.getenv("LANGUAGE_CODE", config.get('language_code', "vi-VN"))
+
+    return {
+        "ARI_URL": ARI_URL,
+        "ARI_USERNAME": ARI_USERNAME,
+        "ARI_PASSWORD": ARI_PASSWORD,
+        "ARI_APP_NAME": ARI_APP_NAME,
+        "SPEECH_ADAPTATION_CONFIG": speech_adaptation_config,
+        "LANGUAGE_CODE": language_code
+    }
+
+# Tải cấu hình ngay khi module được import
+_config = load_config()
+
+# Expose các biến để các module khác có thể import trực tiếp
+ARI_URL = _config["ARI_URL"]
+ARI_USERNAME = _config["ARI_USERNAME"]
+ARI_PASSWORD = _config["ARI_PASSWORD"]
+ARI_APP_NAME = _config["ARI_APP_NAME"]
+SPEECH_ADAPTATION_CONFIG = _config["SPEECH_ADAPTATION_CONFIG"]
+LANGUAGE_CODE = _config["LANGUAGE_CODE"]
+
+logging.info("Đã tải cấu hình ứng dụng thành công.")
+if SPEECH_ADAPTATION_CONFIG:
+    logging.info(f"Đã tải {len(SPEECH_ADAPTATION_CONFIG)} context cho Speech Adaptation.")

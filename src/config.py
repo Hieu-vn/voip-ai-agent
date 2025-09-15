@@ -12,26 +12,23 @@ def load_config():
         if not config:
             config = {}
     except FileNotFoundError:
-        logging.error(f"File cấu hình không tìm thấy tại: {config_path}")
+        logging.warning(f"File cấu hình không tìm thấy tại: {config_path}. Sử dụng giá trị mặc định.")
         config = {}
     except Exception as e:
         logging.error(f"Lỗi khi đọc file cấu hình: {e}")
         config = {}
 
-    # Load ARI config
-    ari_config = config.get('ari', {})
-    ARI_URL = os.getenv('ARI_URL', ari_config.get('url', 'http://localhost:8088/'))
-    ARI_USERNAME = os.getenv('ARI_USERNAME', ari_config.get('username', 'asterisk'))
-    ARI_PASSWORD = os.getenv('ARI_PASSWORD', ari_config.get('password', 'asterisk'))
-    ARI_APP_NAME = os.getenv('ARI_APP_NAME', ari_config.get('app_name', 'voip-ai-agent'))
+    # Load ARI config directly with correct defaults, ignoring YAML for this section
+    # as it contains shell-style variables that are not expanded by PyYAML.
+    ARI_URL = os.getenv('ARI_URL', 'http://localhost:8088/')
+    ARI_USERNAME = os.getenv('ARI_USERNAME', 'vitalpbx')
+    ARI_PASSWORD = os.getenv('ARI_PASSWORD', 'zcWGYbNnPer2YUBTg433EMuVs')
+    ARI_APP_NAME = os.getenv('ARI_APP_NAME', 'voip-ai-agent')
 
-    # Load Speech Adaptation config
+    # Load other configs from YAML
     speech_adaptation_config = config.get('speech_adaptation', {})
-
-    # Load TTS config
     tts_config = config.get('tts', {})
-
-    # Load other configs
+    nlp_config = config.get('nlp', {})
     language_code = os.getenv("LANGUAGE_CODE", config.get('language_code', "vi-VN"))
 
     return {
@@ -41,6 +38,7 @@ def load_config():
         "ARI_APP_NAME": ARI_APP_NAME,
         "SPEECH_ADAPTATION_CONFIG": speech_adaptation_config,
         "TTS_CONFIG": tts_config,
+        "NLP_CONFIG": nlp_config,
         "LANGUAGE_CODE": language_code
     }
 
@@ -54,10 +52,7 @@ ARI_PASSWORD = _config["ARI_PASSWORD"]
 ARI_APP_NAME = _config["ARI_APP_NAME"]
 SPEECH_ADAPTATION_CONFIG = _config["SPEECH_ADAPTATION_CONFIG"]
 TTS_CONFIG = _config["TTS_CONFIG"]
+NLP_CONFIG = _config["NLP_CONFIG"]
 LANGUAGE_CODE = _config["LANGUAGE_CODE"]
 
 logging.info("Đã tải cấu hình ứng dụng thành công.")
-if SPEECH_ADAPTATION_CONFIG:
-    logging.info(f"Đã tải {len(SPEECH_ADAPTATION_CONFIG)} context cho Speech Adaptation.")
-if TTS_CONFIG:
-    logging.info(f"Đã tải cấu hình TTS với {len(TTS_CONFIG.get('voices', {}))} giọng nói.")

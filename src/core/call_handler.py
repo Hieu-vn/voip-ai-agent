@@ -2,7 +2,7 @@ import logging
 import os
 import uuid
 import asyncio
-from src.config import SPEECH_ADAPTATION_CONFIG
+from config import SPEECH_ADAPTATION_CONFIG
 from src.services.ai import nlp_service, stt_service, tts_service
 from src.utils.tracing import tracer
 
@@ -30,7 +30,7 @@ class AI_Call_Handler:
             welcome_path = await tts_service.tts_service_handler("Xin chào, tổng đài AI xin nghe.")
             if welcome_path and self.call_active:
                 span.add_event("Playing welcome message")
-                await self.channel.play(media=f"sound:{os.path.basename(welcome_path).replace('.wav', '')}")
+                await self.channel.play(media=f"sound:{welcome_path.replace('.wav', '')}")
 
         while self.call_active:
             with tracer.start_as_current_span("stt_turn") as stt_span:
@@ -55,7 +55,7 @@ class AI_Call_Handler:
                             tts_span.set_attribute("sentence", sentence_buffer.strip())
                             audio_path = await tts_service.tts_service_handler(text=sentence_buffer.strip())
                             if audio_path and self.call_active:
-                                await self.channel.play(media=f"sound:{os.path.basename(audio_path).replace('.wav', '')}")
+                                await self.channel.play(media=f"sound:{audio_path.replace('.wav', '')}")
                         sentence_buffer = ""
                 
                 if self.call_active and sentence_buffer.strip():
@@ -63,7 +63,7 @@ class AI_Call_Handler:
                         tts_span.set_attribute("sentence", sentence_buffer.strip())
                         audio_path = await tts_service.tts_service_handler(text=sentence_buffer.strip())
                         if audio_path and self.call_active:
-                            await self.channel.play(media=f"sound:{os.path.basename(audio_path).replace('.wav', '')}")
+                            await self.channel.play(media=f"sound:{audio_path.replace('.wav', '')}")
 
             if any(kw in final_transcript.lower() for kw in ["tạm biệt", "kết thúc", "cảm ơn"]): break
     

@@ -1,8 +1,8 @@
-#!/bin/bash
-# Script để chạy ứng dụng AI Agent
+#!/usr/bin/env bash
+set -euo pipefail # Exit on error, unset variables, pipefail
 
 # Tìm thư mục gốc của dự án, nơi script này đang nằm
-DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" &> /dev/null && pwd )"
+DIR=$(cd "$(dirname "$0")/.." && pwd)
 
 # Thêm thư mục 'src' vào PYTHONPATH để Python có thể tìm thấy các module
 export PYTHONPATH="$DIR/src"
@@ -15,7 +15,8 @@ if [ -d "venv" ]; then
     echo "Activating virtual environment..."
     source "venv/bin/activate"
 else
-    echo "Warning: venv not found."
+    echo "Error: Virtual environment 'venv' not found. Please run 'scripts/setup_env.sh' first."
+    exit 1 # Exit if venv is not found
 fi
 
 # Chạy ứng dụng chính

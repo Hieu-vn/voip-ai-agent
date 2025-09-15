@@ -1,5 +1,6 @@
 import os
 import logging
+import asyncio # Import asyncio for Queue
 from google.cloud import speech_v1p1beta1 as speech
 
 class STTGoogleCloudClient:
@@ -8,21 +9,21 @@ class STTGoogleCloudClient:
         self.sample_rate_hz = sample_rate_hz
         self.client = speech.SpeechClient()
 
-    def streaming_recognize_generator(self, fd_audio: int, call_id: str, adaptation_config: dict, timeout: int = 120):
+    async def streaming_recognize_generator(self, audio_queue: asyncio.Queue, call_id: str, adaptation_config: dict, timeout: int = 120):
         """
-        Nhận dạng giọng nói từ một stream và trả về một generator các kết quả.
+        Recognizes speech from an asyncio.Queue and yields results.
         
-        :param fd_audio: File descriptor của luồng audio.
-        :param call_id: ID của cuộc gọi để truy vết log.
-        :param adaptation_config: Dictionary chứa cấu hình speech adaptation.
-        :param timeout: Thời gian chờ tối đa cho API call.
-        :yield: Một dictionary chứa transcript và cờ is_final.
+        :param audio_queue: An asyncio.Queue containing audio chunks (bytes).
+        :param call_id: ID of the call for logging.
+        :param adaptation_config: Dictionary containing speech adaptation configuration.
+        :param timeout: Maximum timeout for the API call.
+        :yield: A dictionary containing transcript and is_final flag.
         """
         chunk_interval_ms = 100
-        chunk_size = int(self.sample_rate_hz * 2 * (chunk_interval_ms / 1000))
-        logging.debug(f"STT Client [{call_id}]: Sample rate {self.sample_rate_hz}Hz, chunk size {chunk_size} bytes.")
+        # chunk_size = int(self.sample_rate_hz * 2 * (chunk_interval_ms / 1000)) # Not needed if reading from queue
+        logging.debug(f"STT Client [{call_id}]: Sample rate {self.sample_rate_hz}Hz.")
 
-        # --- Bước 1: Xây dựng đối tượng Speech Adaptation từ config ---
+        # --- Step 1: Build Speech Adaptation object from config ---
         speech_adaptation = None
         if adaptation_config and adaptation_config.get('phrase_hints'):
             phrase_set = speech.PhraseSet(
@@ -32,9 +33,9 @@ class STTGoogleCloudClient:
                 ]
             )
             speech_adaptation = speech.SpeechAdaptation(phrase_sets=[phrase_set])
-            logging.info(f"STT Client [{call_id}]: Áp dụng Speech Adaptation với {len(adaptation_config['phrase_hints'])} gợi ý.")
+            logging.info(f"STT Client [{call_id}]: Applying Speech Adaptation with {len(adaptation_config['phrase_hints'])} hints.")
 
-        # --- Bước 2: Xây dựng Recognition Config cuối cùng ---
+        # --- Step 2: Build final Recognition Config ---
         enable_punctuation = adaptation_config.get('enable_automatic_punctuation', True)
 
         config = speech.RecognitionConfig(
@@ -42,33 +43,29 @@ class STTGoogleCloudClient:
             sample_rate_hertz=self.sample_rate_hz,
             language_code=self.language_code,
             enable_automatic_punctuation=enable_punctuation,
-            model='phone_call',
-            adaptation=speech_adaptation  # Gắn adaptation vào config
+            adaptation=speech_adaptation  # Attach adaptation to config
         )
         streaming_config = speech.StreamingRecognitionConfig(
             config=config,
-            interim_results=True,
-            single_utterance=True
+            interim_results=True
         )
 
-        def requests_gen():
-            yield speech.StreamingRecognizeRequest(streaming_config=streaming_config)
+        async def requests_gen():
+            # This generator should yield audio content from the queue.
             while True:
-                try:
-                    chunk = os.read(fd_audio, chunk_size)
-                    if not chunk: break
-                    yield speech.StreamingRecognizeRequest(audio_content=chunk)
-                except (OSError, ValueError) as e:
-                    logging.warning(f"STT Client [{call_id}]: Lỗi khi đọc audio stream: {e}")
+                chunk = await audio_queue.get()
+                if chunk is None: # Signal for end of stream
+                    logging.debug(f"STT Client [{call_id}]: Received end of audio stream signal.")
                     break
-            logging.debug(f"STT Client [{call_id}]: Hết audio stream.")
+                yield speech.StreamingRecognizeRequest(audio_content=chunk)
+            logging.debug(f"STT Client [{call_id}]: Finished yielding audio stream.")
 
-        responses = self.client.streaming_recognize(requests=requests_gen(), timeout=timeout)
+        responses = self.client.streaming_recognize(config=streaming_config, requests=requests_gen(), timeout=timeout)
         
-        # --- Bước 3: Xử lý và yield kết quả ---
+        # --- Step 3: Process and yield results ---
         try:
-            logging.info(f"STT Client [{call_id}]: Bắt đầu nhận stream kết quả từ Google API.")
-            for response in responses:
+            logging.info(f"STT Client [{call_id}]: Starting to receive stream results from Google API.")
+            async for response in responses: # Use async for to iterate over async generator
                 if not response.results or not response.results[0].alternatives: continue
                 result = response.results[0]
                 transcript = result.alternatives[0].transcript

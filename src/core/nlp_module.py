@@ -6,13 +6,14 @@ import operator
 import torch
 import threading
 from typing import TypedDict, Annotated, Sequence
-from langchain_core.messages import BaseMessage, HumanMessage, AIMessage
+from langchain_core.messages import BaseMessage, HumanMessage, AIMessage, SystemMessage
 from langgraph.graph import StateGraph, END
 from unsloth import FastLanguageModel
 from transformers import pipeline, AutoTokenizer, TextIteratorStreamer
 from llama_cpp import Llama # Import Llama for GGUF backend
 
 from src.core.nlp_llm_client import LLMClient
+from src.services.knowledge import KnowledgeService
 from src.utils.guardrails import redact_pii, unredact_pii
 from src.utils.metrics import NLP_LATENCY_SECONDS, LLM_ERRORS_TOTAL
 from src.utils.tracing import tracer
@@ -145,6 +146,7 @@ class NLPModule:
         self.model = None
         self.tokenizer = None
         self.agent = None
+        self._last_stream_result = None
 
         # Initialize sentiment analysis pipeline
         try:
@@ -157,6 +159,13 @@ class NLPModule:
         except Exception as e:
             logging.warning(f"Could not load sentiment analysis model: {e}. Emotion detection will be disabled.")
             self.sentiment_pipeline = None
+
+        try:
+            self.knowledge_service = KnowledgeService()
+            logging.info("Knowledge service initialized with %d entries.", len(self.knowledge_service.entries))
+        except Exception as exc:
+            logging.warning("Knowledge service disabled: %s", exc)
+            self.knowledge_service = None
 
     async def load_nlp_model(self):
         """
@@ -251,12 +260,18 @@ class NLPModule:
             return {"response_text": "Xin lỗi, hệ thống NLP chưa sẵn sàng.", "intent": "error", "emotion": "neutral"}
 
         logging.info(f"NLP Agent: Input gốc: '{user_text}'")
-        redacted_text = user_text
-        pii_map = {}
+        redacted_text, pii_map = redact_pii(user_text)
+        # Lưu ánh xạ PII để khôi phục sau khi LLM trả lời
         if pii_map:
             logging.info(f"NLP Agent: Input đã lọc PII: '{redacted_text}'")
 
-        messages = history or []
+        messages = list(history) if history else []
+
+        if self.knowledge_service:
+            context_text = self.knowledge_service.build_context(user_text)
+            if context_text:
+                messages.append(SystemMessage(content=f"Ngu?n th?ng tin n?i b?:\n{context_text}"))
+
         messages.append(HumanMessage(content=redacted_text))
 
         t0 = time.time() # Start timer for Prometheus
@@ -288,15 +303,20 @@ class NLPModule:
             span.set_attribute("user.emotion", user_emotion)
             logging.info(f"NLP Agent (Streaming): Cảm xúc người dùng: {user_emotion}")
             
-            messages = history or []
+            messages = list(history) if history else []
+            if self.knowledge_service:
+                context_text = self.knowledge_service.build_context(user_text)
+                if context_text:
+                    messages.append(SystemMessage(content=f"Ngu?n th?ng tin n?i b?:\n{context_text}"))
             messages.append(HumanMessage(content=user_text)) # Use original text for streaming agent
 
             start_time = time.time()
+            chunks: list[str] = []
             try:
                 async for chunk in self.agent.stream({"messages": messages}):
-                    # PII redaction/unredaction for streaming needs careful handling
-                    # For simplicity, PII is not redacted/unredacted per chunk here.
-                    # It's assumed to be handled at the full utterance level or by the LLM itself.
+                    if chunk is None:
+                        continue
+                    chunks.append(chunk)
                     yield chunk
             finally:
                 duration = time.time() - start_time
@@ -305,4 +325,18 @@ class NLPModule:
                     NLP_LATENCY_SECONDS.observe(duration)
                 except Exception: # Catch any error during metric observation
                     pass
-                logging.info(f"NLP Agent (Streaming): Hoàn tất stream trong {duration:.2f} giây.")
+                final_response = ''.join(chunks).strip()
+                intent = "end_conversation" if any(kw in user_text.lower() for kw in ["t?m bi?t", "k?t th?c"]) else "continue_conversation"
+                self._last_stream_result = {
+                    "response_text": final_response,
+                    "intent": intent,
+                    "emotion": user_emotion,
+                }
+                logging.info(f"NLP Agent (Streaming): HoA?n t???t stream trong {duration:.2f} giA?y.")
+
+    def pop_last_stream_result(self):
+        result = self._last_stream_result
+        self._last_stream_result = None
+        return result or {}
+
+

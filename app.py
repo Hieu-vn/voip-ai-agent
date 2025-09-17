@@ -1,84 +1,179 @@
+# /data/voip-ai-agent/app.py
+import anyio
+import asyncari
+import logging
 import os
+import threading
 from flask import Flask, request, send_file, jsonify
 from TTS.api import TTS
 import torch
-import io
-import logging
-import torchaudio
+import wave
 
-app = Flask(__name__)
-
-# Configure logging
+# --- General Configuration ---
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
-# Initialize TTS model
-# Use "cuda" if GPU is available, otherwise use "cpu"
+# --- Asterisk ARI Configuration ---
+AST_URL = "http://localhost:8088/ari"
+AST_APP = "voip-ai-agent"
+AST_USER = "vitalpbx"
+AST_PASS = "zcWGYbNnPer2YUBTg433EMuVs"
+MEDIA_IP = "127.0.0.1"  # IP address of this application server
+
+# --- TTS Configuration ---
 device = "cuda" if torch.cuda.is_available() else "cpu"
-logging.info(f"Using device: {device}")
-
-# Load viXTTS model from Hugging Face
-# This is an XTTS-v2 model fine-tuned for Vietnamese
 tts = None
-try:
-    # Ensure the model is downloaded and loaded
-    # The model will be downloaded to the default Hugging Face cache directory
-    tts = TTS("thinhlpg/vixtts-demo").to(device)
-    logging.info("viXTTS model loaded successfully.")
-except Exception as e:
-    logging.error(f"Error loading viXTTS model: {e}")
-    # Exit if the model cannot be loaded, as the server won't function
-    exit(1)
 
-@app.route('/synthesize', methods=['POST'])
+# --- Flask App for TTS ---
+flask_app = Flask(__name__)
+
+@flask_app.route('/synthesize', methods=['POST'])
 def synthesize():
     if tts is None:
         return jsonify({"error": "TTS model not loaded."}), 500
 
     data = request.json
     text = data.get('text')
-    speaker_wav_path = data.get('speaker_wav') # Path to the reference speaker audio file
-    language = data.get('language', 'vi') # Default to Vietnamese
+    speaker_wav_path = data.get('speaker_wav')
+    language = data.get('language', 'vi')
 
-    if not text:
-        return jsonify({"error": "Missing 'text' parameter."}), 400
-    
-    # For XTTS-v2, a speaker_wav is crucial for voice cloning.
-    # If not provided, we can use a default one or return an error.
-    # For now, let's return an error if not provided or invalid.
-    if not speaker_wav_path or not os.path.exists(speaker_wav_path):
-        return jsonify({"error": "Missing or invalid 'speaker_wav' path. XTTS-v2 requires a reference speaker WAV for voice cloning."}), 400
+    if not text or not speaker_wav_path or not os.path.exists(speaker_wav_path):
+        return jsonify({"error": "Missing or invalid 'text' or 'speaker_wav' path."}), 400
 
     try:
-        # Create a temporary audio file
-        output_wav_path = "output.wav" # This will be overwritten on each request
-
-        # Synthesize speech
-        tts.tts_to_file(
-            text=text,
-            speaker_wav=speaker_wav_path,
-            language=language,
-            file_path=output_wav_path
-        )
-        logging.info(f"Successfully synthesized text: '{text}' with speaker: '{speaker_wav_path}'")
-
-        # Return the audio file
-        return send_file(output_wav_path, mimetype="audio/wav", as_attachment=True, download_name="synthesized_speech.wav")
-
+        output_wav_path = f"/tmp/output_{os.urandom(4).hex()}.wav"
+        tts.tts_to_file(text=text, speaker_wav=speaker_wav_path, language=language, file_path=output_wav_path)
+        logging.info(f"Synthesized text to {output_wav_path}")
+        return send_file(output_wav_path, mimetype="audio/wav")
     except Exception as e:
         logging.error(f"Error during synthesis: {e}")
         return jsonify({"error": str(e)}), 500
 
-@app.route('/')
+@flask_app.route('/')
 def index():
-    return "Coqui XTTS-v2 Vietnamese TTS Server is running. Use /synthesize endpoint for text-to-speech."
+    return "AI Agent Server is running. ARI client is active. TTS is on /synthesize."
+
+def run_flask_app():
+    # Ensure a default speaker wav exists for TTS testing if needed
+    if not os.path.exists("vietnamese_speaker.wav"):
+        logging.warning("vietnamese_speaker.wav not found. TTS endpoint /synthesize will require a valid 'speaker_wav' path.")
+    flask_app.run(host='0.0.0.0', port=5002, debug=False) # Debug off in thread
+
+# --- ARI Application Logic ---
+
+async def audio_stream_handler(channel_id, media_port):
+    """
+    Listens for RTP packets on the given port and writes the audio to a file.
+    """
+    raw_audio_path = f"/tmp/{channel_id}.raw"
+    wav_audio_path = f"/tmp/{channel_id}.wav"
+    audio_data = bytearray()
+    
+    try:
+        async with await anyio.create_udp_socket(local_port=media_port, local_host=MEDIA_IP) as udp:
+            logging.info(f"[{channel_id}] UDP socket listening on {MEDIA_IP}:{media_port}")
+            # Listen for 5 seconds of audio
+            async with anyio.move_on_after(5):
+                while True:
+                    packet, (host, port) = await udp.receive()
+                    # Strip 12-byte RTP header and append payload
+                    audio_data.extend(packet[12:])
+            logging.info(f"[{channel_id}] Finished receiving audio data ({len(audio_data)} bytes).")
+
+    except Exception as e:
+        logging.error(f"[{channel_id}] Error in UDP listener: {e}")
+        return
+
+    if not audio_data:
+        logging.warning(f"[{channel_id}] No audio data received.")
+        return
+
+    # Save raw audio to a .wav file for easy playback/testing
+    try:
+        with wave.open(wav_audio_path, 'wb') as wf:
+            wf.setnchannels(1)  # Mono
+            wf.setsampwidth(2)  # 16-bit
+            wf.setframerate(8000) # 8kHz sample rate (slin8)
+            wf.writeframes(audio_data)
+        logging.info(f"[{channel_id}] Saved captured audio to {wav_audio_path}")
+    except Exception as e:
+        logging.error(f"[{channel_id}] Error saving WAV file: {e}")
+
+
+async def channel_handler(ari_client, channel):
+    """
+    Main handler for an incoming channel.
+    """
+    channel_id = channel.id
+    logging.info(f"[{channel_id}] New call received. Answering.")
+    
+    try:
+        await channel.answer()
+        
+        # Create an external media channel to receive audio from Asterisk
+        logging.info(f"[{channel_id}] Creating external media stream...")
+        media_info = await channel.externalMedia(
+            app=AST_APP,
+            external_host=f"{MEDIA_IP}:0", # Let the system pick a port
+            format="slin" # 8kHz, 16-bit signed linear PCM
+        )
+        
+        media_port = media_info['channel']['local_port']
+        logging.info(f"[{channel_id}] Asterisk will send media to {MEDIA_IP}:{media_port}")
+
+        # Start the audio stream handler in the background
+        async with anyio.create_task_group() as tg:
+            tg.start_soon(audio_stream_handler, channel_id, media_port)
+
+        # Play a message indicating we are listening
+        await channel.play(media="sound:im-sorry") # Placeholder sound
+        
+        # Wait for the audio handler to finish (or a timeout)
+        await anyio.sleep(6) # Give it a bit more time than the listener
+
+        logging.info(f"[{channel_id}] Finished processing. Hanging up.")
+        await channel.play(media="sound:vm-goodbye")
+
+    except Exception as e:
+        logging.error(f"[{channel_id}] An error occurred in channel_handler: {e}")
+    finally:
+        try:
+            if not channel.destroyed:
+                await channel.hangup()
+        except Exception as e:
+            logging.error(f"[{channel_id}] Failed to hang up channel: {e}")
+
+
+async def main_ari():
+    """
+    Connects to ARI and manages incoming calls.
+    """
+    global tts
+    logging.info("Initializing TTS model...")
+    try:
+        # Load viXTTS model from Hugging Face
+        tts = TTS("thinhlpg/vixtts-demo").to(device)
+        logging.info("viXTTS model loaded successfully.")
+    except Exception as e:
+        logging.error(f"Fatal: Could not load viXTTS model: {e}")
+        return # Exit if model fails
+
+    async with asyncari.connect(AST_URL, AST_APP, AST_USER, AST_PASS) as ari:
+        logging.info("ARI client connected. Waiting for calls...")
+        async with ari.on_event('StasisStart') as stasis_start_events:
+            async for ev in stasis_start_events:
+                # When a new call enters Stasis, spawn a handler for it
+                channel = ev['channel']
+                anyio.create_task_group().start_soon(channel_handler, ari, channel)
+
 
 if __name__ == '__main__':
-    # IMPORTANT: For XTTS-v2, you MUST provide a reference speaker WAV file (3-6 seconds)
-    # For demonstration/testing, you might create a dummy one or instruct the user.
-    # In a real application, this file should be properly managed.
-    # For now, we'll just log a warning if it's not present.
-    if not os.path.exists("vietnamese_speaker.wav"):
-        logging.warning("vietnamese_speaker.wav not found. Please provide a reference WAV file for voice cloning.")
-        logging.warning("You can record a short (3-6 seconds) audio clip of Vietnamese speech and save it as vietnamese_speaker.wav in the same directory as app.py.")
+    # Start Flask app in a background thread
+    flask_thread = threading.Thread(target=run_flask_app, daemon=True)
+    flask_thread.start()
+    logging.info("Flask TTS server starting in a background thread.")
 
-    app.run(host='0.0.0.0', port=5002, debug=True)
+    # Start the main ARI client
+    try:
+        anyio.run(main_ari)
+    except KeyboardInterrupt:
+        logging.info("Shutting down.")

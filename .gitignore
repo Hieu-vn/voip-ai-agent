@@ -10,7 +10,6 @@ dist/
 .venv
 venv/
 env/
-.env
 pip-log.txt
 pip-delete-this-directory.txt
 
@@ -66,10 +65,8 @@ test.txt
 
 # Project specific ignores
 # Ignore data, models, and downloaded files
-/data/
 /models/
 /manual_model_download/
 
 # Ignore media files
-*.wav
 *.mp3

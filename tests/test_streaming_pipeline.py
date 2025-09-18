@@ -1,4 +1,5 @@
 ﻿import asyncio
+import time
 from types import SimpleNamespace
 
 import pytest
@@ -39,7 +40,13 @@ async def test_streaming_response_flushes_on_punctuation(monkeypatch):
 
     handler._play_tts_response = fake_play  # type: ignore
 
-    result = await handler._stream_nlp_response("call-1", "channel-1", "xin chao", [])
+    result = await handler._stream_nlp_response(
+        "call-1",
+        "channel-1",
+        "xin chao",
+        [],
+        time.monotonic(),
+    )
 
     assert played == ["Xin chao ban.", "Rat vui duoc ho tro."]
     assert result["response_text"] == "Xin chao ban. Rat vui duoc ho tro."

@@ -1,0 +1,90 @@
+
+# Config for fine-tuning FastPitch on Vietnamese
+name: "FastPitch_VI_FineTune"
+
+# ==== Model Section =====
+model:
+  # Describes the model architecture, will be inherited from the pre-trained model
+  # but we can override some parameters if needed.
+  sample_rate: 22050
+  lang: "vi" # Specify language for text processing
+
+  # --- Data Loader --- 
+  train_ds:
+    dataset:
+      _target_: nemo.collections.tts.data.datalayers.AudioTextDataLayer
+      manifest_filepath: /data/voip-ai-agent/data/processed/phoaudiobook/manifests/train_manifest.json # Path to the training manifest
+      max_duration: null
+      min_duration: 0.1
+      ignore_file: null
+      trim: false
+    dataloader_params:
+      drop_last: false
+      shuffle: true
+      batch_size: 24
+      num_workers: 8
+
+  validation_ds:
+    dataset:
+      _target_: nemo.collections.tts.data.datalayers.AudioTextDataLayer
+      manifest_filepath: /data/voip-ai-agent/data/processed/phoaudiobook/manifests/val_manifest.json # Path to the validation manifest
+      max_duration: null
+      min_duration: 0.1
+      ignore_file: null
+      trim: false
+    dataloader_params:
+      drop_last: false
+      shuffle: false
+      batch_size: 24
+      num_workers: 8
+
+  test_ds:
+    dataset:
+      _target_: nemo.collections.tts.data.datalayers.AudioTextDataLayer
+      manifest_filepath: /data/voip-ai-agent/data/processed/phoaudiobook/manifests/test_manifest.json # Path to the test manifest
+      max_duration: null
+      min_duration: 0.1
+      ignore_file: null
+      trim: false
+    dataloader_params:
+      drop_last: false
+      shuffle: false
+      batch_size: 24
+      num_workers: 8
+
+  # --- Fine-tuning setup ---
+  # Initialize weights from the pre-trained English model
+  init_from_nemo_model: "/data/voip-ai-agent/models/tts/en/fastpitch_en.nemo"
+
+  # Freeze the encoder to transfer phoneme representations, fine-tune the rest
+  # This is a common strategy for cross-language transfer
+  # You can experiment with unfreezing it after some epochs for better prosody.
+  # optimizer:
+  #   lr: 1e-4
+  #   sched:
+  #     name: CosineAnnealing
+  #     warmup_steps: 1000
+  #     min_lr: 1e-6
+
+# ==== Trainer Section ====
+trainer:
+  devices: 8 # Use 8 GPUs
+  accelerator: gpu
+  strategy: ddp # Distributed Data Parallel for multi-GPU training
+  max_epochs: 1000
+  precision: 16 # Use 16-bit precision for faster training on V100s
+
+  # --- Checkpointing --- 
+  enable_checkpointing: true
+  checkpoint_callback: true
+  logger: false # Can be configured to use TensorBoard or W&B
+
+  # --- Logging --- 
+  log_every_n_steps: 100
+  val_check_interval: 1000 # Run validation every 1000 steps
+
+  # --- Other --- 
+  accumulate_grad_batches: 1
+  gradient_clip_val: 1000.0
+  benchmark: false
+  num_sanity_val_steps: 2

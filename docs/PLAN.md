@@ -1,138 +1,180 @@
-## Kế hoạch triển khai hệ thống trả lời điện thoại tự động AI Agent trên VoIP
+# Technical Implementation Plan: AI Agent for VoIP
 
-**Mục tiêu:** Triển khai hệ thống trả lời điện thoại tự động AI Agent trên Asterisk/VitalPBX, tích hợp STT, NLP và TTS, đạt độ trễ thấp (dưới 500ms), tự chủ (agentic AI), và tối ưu cho tiếng Việt.
+**Objective:** To align the project's codebase and documentation with a unified, modern, streaming-first architecture using Asterisk ARI and NVIDIA NeMo for TTS.
 
-### 1. Thiết kế kiến trúc kỹ thuật
+## 1. System Architecture (The Single Source of Truth)
 
-#### 1.1. Luồng dữ liệu tổng quan (Text-based/ASCII Art)
+- **VoIP Interface:** Asterisk REST Interface (ARI). Event-driven and asynchronous.
+- **Application Core:** A main Python process (`src/main.py`) that spawns a `CallHandler` (`src/core/call_handler.py`) for each incoming call.
+- **STT:** Google Cloud Speech-to-Text API (streaming).
+- **NLP:** Llama 4 Scout (local).
+- **TTS:** A separate, dedicated NVIDIA NeMo server (FastPitch + BigVGAN) that the main application communicates with via a REST API.
+
+### Data Flow Summary
 
 ```
-Cuộc gọi VoIP (Inbound)
-      |
-      V
-Asterisk (VitalPBX)
-      | (AGI: voip_ai_agent.sh)
-      V
-Python AGI Handler (agi_handler.py)
-      |
-      +--- Ghi âm giọng nói người dùng (file WAV)
-      |
-      +--- STT (transcribe.py - Google Cloud STT API)
-      |      (Chuyển WAV -> Text)
-      V
-Văn bản người dùng
-      |
-      +--- NLP (process_nlp -> Llama 4 Scout API Server)
-      |      (Xử lý ý định, tạo phản hồi, MCP/Function Calling, Emotion Detection)
-      V
-Văn bản phản hồi AI
-      |
-      +--- TTS (generate_audio.py -> TTS Model)
-      |      (Chuyển Text -> WAV)
-      V
-Audio phản hồi AI (lưu vào Asterisk sounds/vi/custom/)
-      |
-      V
-Asterisk (stream_file)
-      |
-      V
-Playback cho người dùng
-      |
-      V
-Kết thúc cuộc gọi hoặc tiếp tục vòng lặp hội thoại
+Call -> Asterisk (ARI Event) -> CallHandler (forks RTP Audio) -> RTPAudioForwarder -> STTModule (Google Cloud STT) -> Get Text -> 
+NLPModule (Llama 4 Scout) -> Get Response Text -> TTSModule (Client) -> NeMo TTS Server (FastPitch + BigVGAN) -> Get Audio Stream -> CallHandler (Playback) -> User
 ```
 
-#### 1.2. Tích hợp Asterisk (AGI)
+## 2. Data Contract & Quality Assurance
 
-*   **Cốt lõi:** AGI (Asterisk Gateway Interface) cho phép Asterisk tạm dừng cuộc gọi và trao quyền điều khiển cho script Python bên ngoài.
-*   **Luồng:** Dialplan của Asterisk sẽ cấu hình để thực thi `AGI(voip_ai_agent.sh)`. Script shell này kích hoạt `agi_handler.py` (logic Python chính) để giao tiếp hai chiều với Asterisk.
+This section defines the rules and standards for all datasets used in training to ensure quality, consistency, and reproducibility.
 
-#### 1.3. Tích hợp CRM (MCP) và AI Agent (LangGraph)
+- **Text Normalization:**
+    - **Source:** All normalization rules (e.g., converting numbers to text, handling abbreviations, special characters) must be defined in a separate configuration file (e.g., `config/normalization_rules.yaml`).
+    - **Rationale:** Decouples rules from code, allowing for easier maintenance and versioning of different normalization schemes.
+    - **Implementation:** Scripts must load and apply these external rules.
 
-*   **MCP (Model Context Protocol):** Sử dụng function calling trong mô hình NLP (Llama 4 Scout) để AI Agent tra cứu dữ liệu CRM (như Zoho, Salesforce) hoặc cơ sở dữ liệu khác (ví dụ: trạng thái đơn hàng).
-*   **AI Agent (LangGraph):** Xây dựng agentic AI với LangGraph (hoặc framework tương tự) để điều phối các tác vụ phức tạp (STT, tra cứu, phản hồi, emotion detection).
-*   **Emotion Detection:** Tích hợp để điều chỉnh phản hồi của AI Agent.
+- **Audio Data Filtering:**
+    - **Duration:** Audio clips must have a duration between **1.5 and 20 seconds**.
+    - **Application:** This filter is applied *before* writing the final training manifests.
+    - **Rationale:** Prevents model alignment issues caused by clips that are too short or too long.
 
-### 2. Cài đặt môi trường
+- **Data Provenance and Versioning:**
+    - **Checksum:** Each processed WAV file should have a checksum (e.g., MD5) recorded in the manifest.
+    - **Dataset Version:** Each generated manifest set (train/validation/test) will be assigned a version (e.g., `v1.0`, `v1.1`).
+    - **Metadata:** A "Dataset Card" will accompany each version, detailing:
+        - Source data.
+        - Normalization rules applied.
+        - Total duration, number of speakers.
+        - Key statistics from QA checks.
+        - Git commit hash of the code used to generate it.
 
-1.  **Cài đặt cơ bản:**
-    *   Debian 12, VitalPBX/Asterisk 20.
-    *   NVIDIA drivers/CUDA 12.x cho 8 GPU NVIDIA V100.
-    *   `ffmpeg` (yêu cầu bởi `pydub`).
+- **Dataset Splitting:**
+    - **Method:** A single, global **stratified split** based on speaker ID must be performed on the *entire* dataset.
+    - **Ratios:** Currently, **90% for training, 5% for validation, and 5% for testing.**
+    - **Rationale:** Ensures objective evaluation by preventing speaker data from leaking between training and validation sets.
 
-2.  **Cấu hình môi trường Python:**
-    *   Môi trường ảo Python (`venv`) tại `/data/voip-ai-agent/venv/`.
-    *   Cài đặt các thư viện Python từ `requirements.txt` (bao gồm Unsloth, Hugging Face Transformers, llama.cpp, google-cloud-speech, google-cloud-texttospeech, loguru, pydub, asterisk.agi).
+- **Quality Assurance (QA) Metrics:**
+    - **Quantitative:** Before finalizing a dataset version, the following stats must be reported:
+        - Duration distribution (histogram).
+        - Percentage of audio clipping.
+        - Loudness distribution (LUFS).
+        - Rejection rate (files failing filters).
+    - **Qualitative:** A small, random sample of audio from various speakers will be manually reviewed to check for clarity, noise, and correctness of transcription.
 
-3.  **Cấu hình thư mục âm thanh Asterisk:**
-    *   Tạo các thư mục `/var/lib/asterisk/sounds/vi/` và `/var/lib/asterisk/sounds/vi/custom/`. (Sử dụng `mkdir -p`).
-    *   Tạo các tệp âm thanh giả (silent WAV) cho các lời nhắc của Asterisk (`welcome`, `beep`, `please_repeat`, `error_stt`). (Sử dụng một script Python để tạo).
-    *   Đặt quyền và quyền sở hữu thích hợp cho các tệp và thư mục âm thanh Asterisk.
+- **Model Parameter Consistency:**
+    - **Mel-Spectrogram:** Parameters (n_mels, hop_length, fmax, etc.) must be identical between the fine-tuning pipeline (FastPitch) and the inference server's vocoder (BigVGAN). This is critical to avoid audio quality degradation.
 
-### 3. Triển khai mã nguồn AI Agent
+## 3. Task Breakdown & Implementation Plan
 
-1.  **`agi_handler.py`:**
-    *   **Chức năng:** Là trung tâm điều khiển luồng cuộc gọi, giao tiếp hai chiều với Asterisk thông qua AGI. Nó điều phối các tác vụ STT, NLP và TTS.
-    *   **Thành phần chính:** Xử lý cuộc gọi, ghi âm, gọi STT, NLP, TTS, phát lại âm thanh, xử lý vòng lặp hội thoại.
+This plan is broken down into sequential stages for a structured and verifiable rollout of the TTS system.
 
-2.  **`transcribe.py`:**
-    *   **Chức năng:** Chuyển đổi giọng nói thành văn bản (STT) sử dụng Google Cloud Speech-to-Text API (đồng bộ, file-based).
-    *   **Thành phần chính:** Nhận tệp âm thanh, gửi đến Google Cloud STT, trả về văn bản phiên âm.
+### Stage 1: Foundation & Model Setup (Current Stage)
 
-3.  **`generate_audio.py`:**
-    *   **Chức năng:** Chuyển đổi văn bản thành giọng nói (TTS) sử dụng mô hình TTS (ví dụ: `facebook/mms-tts-vie`).
-    *   **Thành phần chính:** Tải và sử dụng mô hình TTS, tổng hợp giọng nói, lưu tệp âm thanh.
+*   **Task 1.1: Code Cleanup**
+    *   **Action:** Delete `app.py` and `src/tts/generate_audio.py`.
+    *   **Status:** Done.
 
-4.  **`voip_ai_agent.sh`:**
-    *   **Chức năng:** Script shell trung gian được Asterisk gọi, thiết lập môi trường Python và khởi chạy `agi_handler.py`.
-    *   **Thành phần chính:** Thiết lập biến môi trường (`PYTHONPATH`, `GOOGLE_APPLICATION_CREDENTIALS`), thực thi `agi_handler.py`, chuyển hướng lỗi Python.
+*   **Task 1.2: Update Dependencies**
+    *   **Action:** Add `nemo_toolkit[all]`, `fastapi`, `uvicorn` to `requirements.txt`.
+    *   **Status:** Done.
 
-### 4. Cấu hình Asterisk/VitalPBX
+*   **Task 1.3: Download Pre-trained Models**
+    *   **Action:** Manually download the following models from NVIDIA NGC:
+        -   `nvidia/tts_en_fastpitch`
+        -   `nvidia/bigvgan_v2_22khz_80band_256x`
+    *   **Action:** Place the downloaded models into the `models/tts/en` (FastPitch) and `models/tts/vocoder` (BigVGAN) directories.
+    *   **Status:** Done.
 
-1.  **Xác nhận Dialplan:**
-    *   Đảm bảo `vitalpbx/extensions__99-ai-agent.conf` chứa context `[custom-ai-agent]` và gọi `AGI(voip_ai_agent.sh)`.
-    *   Đảm bảo `vitalpbx/extensions__50-1-dialplan.conf` định tuyến cuộc gọi đến `custom-contexts,cc-1,1` cho DID mong muốn.
+*   **Task 1.4: Install & Configure Docker Environment**
+    *   **Action:** Install Docker Engine and Docker Compose plugin on Debian 12 (using `scripts/setup/install_docker.sh`).
+    *   **Action:** Create `.dockerignore` to optimize build context.
+    *   **Action:** Configure Docker to use `/data` partition for its data root.
+    *   **Action:** Optimize `Dockerfile` and `requirements.txt` for robust build (including system dependencies like `build-essential`, `sox`, `python3.11-dev`, and Python build-time dependencies like `numpy`, `typing_extensions`, `Cython`, `wheel`).
+    *   **Status:** Done.
 
-2.  **Cấu hình Inbound Route trong VitalPBX:**
-    *   Tạo Inbound Route mới trong giao diện web VitalPBX, với DID là số điện thoại của bạn.
-    *   Destination là Custom Destination, với giá trị `custom-contexts,cc-1,1`.
-    *   Lưu và áp dụng thay đổi.
+*   **Task 1.5: Update Environment Configuration**
+    *   **Action:** Update `.env` file with correct paths to downloaded models.
+    *   **Status:** Done.
 
-### 5. Khởi chạy và kiểm tra
+### Stage 2: NeMo TTS Server Implementation (English)
 
-1.  **Khởi chạy máy chủ NLP (Llama 4 Scout):**
-    *   **Mục đích:** Cung cấp API cho `agi_handler.py` để xử lý văn bản bằng mô hình Llama 4 Scout.
-    *   **Thành phần chính:**
-        *   Mô hình Llama 4 Scout (tối ưu hóa bằng Unsloth, có thể chuyển đổi sang GGUF cho `llama.cpp`).
-        *   API Server (ví dụ: FastAPI/Uvicorn) để expose mô hình qua HTTP.
-        *   Sử dụng `device_map='auto'` hoặc `model.parallelize()` để tận dụng 8 GPU V100 cho multi-GPU inference.
-        *   API phải tương thích với OpenAI Chat Completions API tại `http://localhost:8000/v1/chat/completions`.
+*   **Task 2.1: Implement the FastAPI Server**
+    *   **Action:** Develop the server logic in `tts_server/server.py`.
+    *   **Details:**
+        -   The server will load the FastPitch and BigVGAN models based on paths specified in the `.env` file.
+        -   It must expose a `/synthesize` endpoint that takes `text` and `language` as input.
+        -   For now, it will only handle the `en` language code.
 
-2.  **Theo dõi nhật ký:**
-    *   Mở các cửa sổ terminal riêng biệt để theo dõi nhật ký hoạt động và lỗi của các thành phần.
+*   **Task 2.2: Client-Side Integration**
+    *   **Action:** Modify `src/core/tts_module.py` to make a POST request to the TTS server.
+    *   **Action:** Ensure the `TTS_SERVER_URL` in the `.env` file is correctly configured.
 
-3.  **Thực hiện cuộc gọi kiểm tra:**
-    *   Gọi đến số DID đã cấu hình.
-    *   Nói rõ ràng vào điện thoại.
-    *   Quan sát nhật ký để xem quá trình STT, NLP và TTS.
+*   **Task 2.3: Initial Launch & Testing**
+    *   **Action:** Update `.env` with the paths to the English models.
+    *   **Status:** Done (Configuration is ready, actual launch pending successful Docker build).
+    *   **Action:** Launch both the main application and the TTS server.
+    *   **Verification:** Place a test call and verify that English TTS is working end-to-end.
 
-### 6. Tối ưu hóa GPU và hiệu năng
+### Stage 3: Vietnamese Model Fine-Tuning
 
-*   **Unsloth (4-bit quantization):** Sử dụng để giảm VRAM và latency cho Llama 4 Scout.
-*   **llama.cpp (GGUF):** Tùy chọn để chạy Llama 4 Scout trên 8 V100 với hiệu suất cao hơn.
-*   **Đo latency:** Đặt mục tiêu dưới 500ms. Tối ưu hóa bằng cách điều chỉnh batch size, multi-GPU.
+*   **Task 3.1: Prepare Dataset**
+    *   **Action:** Run the data preparation scripts in `scripts/preparation/` (`1_prepare_audio_parquet.py`, `2_create_manifest.py`) on the `phoaudiobook` dataset.
+    *   **Goal:** To create the manifest files required for NeMo training (train, validation, test).
+    *   **Status:** Done.
 
-### 7. Dài hạn (Technical Roadmap)
+*   **Task 3.2: Run Fine-Tuning Script**
+    *   **Action:** Execute `scripts/training/run_finetune.py` using the configuration from `config/training/config_finetune_vi.yaml`.
+    *   **Action:** Ensure `config/training/config_finetune_vi.yaml` points to the correct manifest files.
+    *   **Status:** Configuration updated.
+    *   **Goal:** To generate a fine-tuned FastPitch model for Vietnamese.
 
-*   **Scalability:** Xử lý 1000+ cuộc gọi đồng thời (multi-GPU, Kubernetes).
-*   **Maintainability:** Mã nguồn modular (classes/functions), cấu trúc Git repo rõ ràng.
-*   **Cập nhật công nghệ:** Kế hoạch tích hợp Llama 4 updates, federated learning cho privacy, multi-modal (SMS/image nếu mở rộng).
-*   **Privacy:** Đề xuất encryption cho audio/data, tuân thủ các quy định bảo mật (GDPR-like).
+### Stage 4: Final Integration & Completion
 
-### 8. Yêu cầu code
+*   **Task 4.1: Update Configuration**
+    *   **Action:** Modify the `.env` file to include the path to the newly trained Vietnamese model.
 
-*   Code Python phải clean, modular, có comment chi tiết, error handling, và logging.
-*   Liệt kê đầy đủ thư viện (trong `requirements.txt`).
-*   Đảm bảo code chạy trên Debian 12 với quyền root.
+*   **Task 4.2: Final Verification**
+    *   **Action:** Restart the TTS server.
+    *   **Verification:** Place test calls and confirm that the system can now synthesize speech in both English and Vietnamese.
 
-**Lưu ý:** Mã nguồn đầy đủ cho các tệp `agi_handler.py`, `transcribe.py`, `generate_audio.py` được quản lý trong các tệp tương ứng trong dự án. Vui lòng tham khảo trực tiếp các tệp đó để xem chi tiết triển khai.
+---
+## 4. Kế hoạch Phát triển Module NLP (Production-Ready)
+
+*Đây là kế hoạch phát triển toàn diện để nâng cấp module NLP từ một bản mẫu chức năng thành một agent hội thoại chuyên nghiệp, sẵn sàng cho production, dựa trên các phân tích và đề xuất chuyên sâu.*
+
+### Giai đoạn 0: Ổn định Nền tảng (Ưu tiên tức thì)
+*   **Mục tiêu:** Khởi động thành công hệ thống hiện tại trên Docker. Đây là bước bắt buộc để có một nền tảng ổn định trước khi thực hiện các nâng cấp.
+*   **Hành động:**
+    1.  Hoàn tất thành công `docker compose build --no-cache`.
+    2.  Chạy `docker compose up` và xác minh cả hai service `app` và `tts_server` đều khởi động mà không gặp lỗi.
+
+### Giai đoạn 1: Lõi Đối thoại & Tương tác (Core Dialogue & Interaction)
+*   **Mục tiêu:** Xây dựng nền tảng cho việc hiểu sâu và quản lý hội thoại một cách có cấu trúc.
+*   **Hạng mục:**
+    1.  **Chuẩn hóa Đầu vào (Input Processing):**
+        *   **Intent/Slot Schema:** Định nghĩa cấu trúc JSON chuẩn cho các tác vụ thoại (vd: `tra_cuu_don_hang`).
+        *   **Vietnamese Normalization:** Xây dựng module chuẩn hóa tiếng Việt (số, ngày, tiền tệ, không dấu).
+        *   **Post-ASR Normalization:** Phục hồi dấu câu, chuẩn hóa chính tả sau khi STT để NLP và TTS hoạt động tốt hơn.
+    2.  **Quản lý Trạng thái Hội thoại (Dialogue State Management):**
+        *   **State Manager:** Tích hợp `DialogueStateManager` vào LangGraph để quản lý bộ nhớ phiên và chính sách hội thoại (khi nào hỏi lại, khi nào chuyển máy).
+        *   **Barge-in/Interrupt Handling:** Thiết kế cơ chế để agent có thể xử lý việc người dùng ngắt lời.
+    3.  **Ràng buộc Đầu ra & Function Calling An toàn:**
+        *   **Structured Output:** Sử dụng GBNF grammar (với `llama.cpp`) hoặc JSON-guided decoding (với `transformers`) để ép LLM trả về đúng định dạng JSON khi gọi tool.
+        *   **Input Sanitization:** Làm sạch và kiểm tra đầu vào trước khi truyền cho các tool gọi API của CRM để chống prompt injection.
+
+### Giai đoạn 2: Tối ưu hóa Độ trễ & Tri thức (Latency & Knowledge Optimization)
+*   **Mục tiêu:** Giảm độ trễ đầu-cuối xuống dưới 500ms và tăng cường "trí thông minh" cho agent.
+*   **Hạng mục:**
+    1.  **Tối ưu Streaming & Latency:**
+        *   **Endpointing:** Tích hợp VAD để phát hiện người dùng ngưng nói và xử lý audio sớm.
+        *   **Speculative Decoding:** Nghiên cứu áp dụng các kỹ thuật như speculative decoding để tăng tốc độ tạo token của LLM.
+        *   **KV-Cache Reuse:** Tối ưu việc tái sử dụng KV-cache giữa các lượt nói.
+    2.  **Tích hợp Vector Database:**
+        *   **Nâng cấp `KnowledgeService`:** Thay thế file JSON bằng Vector DB (ChromaDB, Weaviate) để tìm kiếm ngữ nghĩa, giúp câu trả lời ngữ cảnh chính xác hơn.
+        *   **Data Pipeline:** Xây dựng pipeline để cập nhật tri thức cho Vector DB một cách định kỳ.
+
+### Giai đoạn 3: An toàn, Giám sát & Hoàn thiện (Security, Observability & Polish)
+*   **Mục tiêu:** Đảm bảo hệ thống an toàn, dễ dàng theo dõi, và có thể đánh giá được hiệu quả.
+*   **Hạng mục:**
+    1.  **An toàn & Tuân thủ Mở rộng:**
+        *   **Advanced PII:** Tích hợp Presidio để dò và che thông tin nhạy cảm trong cả log và prompt.
+        *   **Guardrails:** Xây dựng các rào chắn để ngăn agent trả lời các chủ đề không mong muốn và tự động chuyển máy khi phát hiện rủi ro.
+    2.  **Quan trắc & Đánh giá Chuyên sâu:**
+        *   **Metrics:** Mở rộng hệ thống metric để đo chi tiết latency từng bước (ASR, NLU, TTS) và các chỉ số nghiệp vụ (tỷ lệ thành công, tỷ lệ chuyển máy).
+        *   **Bộ Test Tiếng Việt:** Xây dựng bộ test chuyên biệt cho tiếng Việt với các kịch bản thực tế (tiếng ồn, nói không dấu, tên riêng phức tạp).
+    3.  **Quản lý Cấu hình & Triển khai:**
+        *   **Centralized Config:** Sử dụng Hydra hoặc Pydantic-settings để quản lý tất cả cấu hình một cách tập trung.
+        *   **Secret Management:** Tích hợp giải pháp quản lý secret (như HashiCorp Vault hoặc Doppler) cho các khóa API.

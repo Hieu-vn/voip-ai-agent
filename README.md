@@ -33,16 +33,16 @@ The entire process is event-driven and built on streaming:
    2. Tells Asterisk to fork the incoming audio and stream it to a local UDP port.
    ↓
 🎧 Real-time Audio Processing
-   1. A UDP listener receives RTP packets and pushes the raw audio to the STT module.
-   2. **STT**: The audio is streamed to the **Google Cloud Speech-to-Text API**.
+   1. A UDP listener receives RTP packets and pushes the raw audio to the STT module (RTPAudioForwarder).
+   2. **STT**: The audio is streamed to the **Google Cloud Speech-to-Text API** (STTModule).
    3. The transcribed text is received.
    ↓
 🧠 AI Processing
-   1. **NLP**: The text is sent to the locally-hosted **Llama 4 Scout** model for intent processing.
+   1. **NLP**: The text is sent to the locally-hosted **Llama 4 Scout** model for intent processing (NLPModule).
    2. The NLP model's response text is generated.
    ↓
 🗣️ Speech Synthesis
-   1. **TTS**: The response text is sent to a separate, dedicated **NVIDIA NeMo TTS Server** (`tts_server/server.py`).
+   1. **TTS**: The response text is sent to a separate, dedicated **NVIDIA NeMo TTS Server** (`tts_server/server.py`) via a client (TTSModule).
    2. This server uses a two-step pipeline for high-quality audio:
       - **Step 1 (Spectrogram):** A **FastPitch** model converts text into a mel-spectrogram.
       - **Step 2 (Audio):** A **BigVGAN** model converts the spectrogram into an audible waveform.
@@ -64,7 +64,7 @@ The entire process is event-driven and built on streaming:
     -   **Architecture**: Decouples heavy TTS processing from the core call-handling logic to ensure stability and performance.
     -   **Core Technology**: Uses a 2-step pipeline: **NeMo FastPitch** for spectrogram generation and **NVIDIA BigVGAN** as the vocoder for high-quality waveform synthesis.
     -   **Language Strategy**:
-        -   **English**: Utilizes high-quality, pre-trained models from NVIDIA (`nvidia/tts_en_fastpitch`, `nvidia/bigvgan_v2_22khz_80band_256x`).
+        -   **English**: Utilizes high-quality, pre-trained models from NVIDIA.
         -   **Vietnamese**: A custom **FastPitch** model fine-tuned on the `phoaudiobook` dataset. The fine-tuning process is managed by scripts in `scripts/training/`.
 - **📡 VoIP Integration**:
   - Uses **ARI (Asterisk REST Interface)** for fine-grained, real-time call control. The `src/core/call_handler.py` contains all the logic for interacting with the Asterisk channel.
@@ -73,24 +73,31 @@ The entire process is event-driven and built on streaming:
 
 This plan outlines the step-by-step process for deploying the complete bilingual TTS system.
 
-### Stage 1: Foundation & Model Setup (Current Stage)
+### Stage 1: Foundation & Model Setup
 
 1.  **Project Structure**: The codebase has been reorganized to support the new architecture. (Done)
 2.  **Environment Setup**: All necessary libraries (`nemo_toolkit`, `fastapi`, etc.) are defined in `requirements.txt`. (Done)
-3.  **Next Action: Download Models**: Manually download the pre-trained models:
-    *   `nvidia/tts_en_fastpitch`
-    *   `nvidia/bigvgan_v2_22khz_80band_256x`
-    *   Place them into the `models/tts/` directory.
+3.  **Download Pre-trained Models**: Manually download the pre-trained models:
+    *   **FastPitch (English):** `nvidia/tts_en_fastpitch` -> Placed in `models/tts/en/`
+    *   **BigVGAN (Universal):** `nvidia/bigvgan_v2_22khz_80band_256x` -> Placed in `models/tts/vocoder/`
+    *   **Status:** Done.
+4.  **Docker Environment Configuration**: 
+    *   Install Docker Engine and Docker Compose plugin (using `scripts/setup/install_docker.sh`).
+    *   Create `.dockerignore` to optimize build context.
+    *   Configure Docker to use `/data` partition for its data root.
+    *   Optimize `Dockerfile` and `requirements.txt` for robust build (including system dependencies like `build-essential`, `sox`, `python3.11-dev`, and Python build-time dependencies like `numpy`, `typing_extensions`, `Cython`, `wheel`).
+    *   **Status:** Done.
+5.  **Update Environment Variables**: Update the `.env` file with the correct paths to the downloaded models. (Done)
 
 ### Stage 2: Server Launch (English TTS)
 
-1.  **Configure Environment**: Update the `.env` file with the correct paths to the models downloaded in Stage 1.
+1.  **Configure Environment**: Update the `.env` file with the correct paths to the models downloaded in Stage 1. (Done)
 2.  **Launch Server**: Start the FastAPI server in `tts_server/server.py`. At this point, the server will be fully capable of synthesizing high-quality English speech.
 
 ### Stage 3: Vietnamese Model Fine-tuning
 
-1.  **Data Preparation**: Run the scripts `1_prepare_audio_parquet.py` and `2_create_manifest.py` from `scripts/preparation/` to process the `phoaudiobook` dataset.
-2.  **Run Fine-tuning**: Execute the `run_finetune.py` script from `scripts/training/` with the `config_finetune_vi.yaml` config to create a custom Vietnamese FastPitch model.
+1.  **Data Preparation**: Run the data preparation scripts (`prepare_audio_parquet.py`, `create_manifest.py`) to process the `phoaudiobook` dataset, creating train/validation/test manifests. (Done)
+2.  **Run Fine-tuning**: Execute `run_finetune.py` with the `config_finetune_vi.yaml` config to create a custom Vietnamese FastPitch model. This will be saved in `models/tts/vi/`. (Configuration updated)
 
 ### Stage 4: Final Integration & Completion
 

@@ -1,0 +1,43 @@
+version: '3.8'
+
+services:
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: voip_app
+    command: ["python", "-m", "src.main"]
+    depends_on:
+      - tts_server
+    env_file:
+      - .env
+    # The main app doesn't need a GPU
+    # It connects to Asterisk (externally) and the tts_server (internally)
+    stdin_open: true
+    tty: true
+    # We don't expose ports here as ARI is an outbound connection
+    # and it communicates with tts_server via the internal docker network.
+
+  tts_server:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: voip_tts_server
+    ports:
+      - "8001:8001"
+    env_file:
+      - .env
+    volumes:
+      # Mount the models directory into the container
+      # The paths in .env should be relative to this mount point (e.g., /models/tts/vi/...)
+      - ./models:/app/models
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1 # Request 1 GPU. Change to 'all' to use all available GPUs.
+              capabilities: [gpu]
+    # The default CMD in the Dockerfile is to run this server
+    stdin_open: true
+    tty: true

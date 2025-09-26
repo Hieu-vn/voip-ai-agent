@@ -1,0 +1,33 @@
+# Quy tắc chuẩn hoá văn bản cho bộ dữ liệu TTS Tiếng Việt
+# Version: 2.0
+# Strategy: Loại bỏ toàn bộ dấu câu và ký tự đặc biệt, chỉ giữ lại chữ, số và khoảng trắng.
+
+# 1. Bảng chuyển đổi số thành chữ (giữ nguyên)
+digit_map:
+  "0": "không"
+  "1": "một"
+  "2": "hai"
+  "3": "ba"
+  "4": "bốn"
+  "5": "năm"
+  "6": "sáu"
+  "7": "bảy"
+  "8": "tám"
+  "9": "chín"
+
+# 2. Các mẫu thay thế bằng Regex
+# Thực hiện theo thứ tự.
+regex_rules:
+  # Bước 1: Thay thế tất cả các ký tự không phải là chữ cái tiếng Việt, số, hoặc khoảng trắng bằng một khoảng trắng duy nhất.
+  # Bao gồm tất cả dấu câu, ký tự đặc biệt, ký tự điều khiển, v.v.
+  - pattern: '[^a-zA-Z0-9À-ỹà-ỹ ]'
+    replace: ' '
+    description: "Keep only standard Vietnamese alphanumeric characters and spaces. Replace all others with a space."
+
+  # Bước 2: Gộp nhiều khoảng trắng liên tiếp thành một khoảng trắng duy nhất.
+  - pattern: '\s+'
+    replace: ' '
+    description: "Collapse multiple whitespace characters into a single space."
+
+# 3. Giới hạn độ dài (giữ nguyên)
+max_length: 200

@@ -1,0 +1,25 @@
+# Ignore Git and IDE specific files
+.git
+.idea
+.vscode
+
+# Ignore Python virtual environment and cache
+venv/
+.venv/
+unsloth_compiled_cache/
+__pycache__/
+*.pyc
+
+# Ignore large data, model, and report directories.
+# These are mounted as volumes at runtime, not needed in the build context.
+data/
+models/
+diagnostics_reports/
+
+# Ignore vendor directories
+vendor/
+
+# Ignore environment files and other artifacts
+.env
+*.pcap
+*.log

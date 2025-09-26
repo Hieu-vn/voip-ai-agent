@@ -70,3 +70,11 @@ test.txt
 
 # Ignore media files
 *.mp3
+
+# Environment file
+.env
+
+# Data and reports
+data/raw/
+data/processed/
+diagnostics_reports/

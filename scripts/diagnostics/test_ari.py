@@ -5,7 +5,7 @@ from asyncari import connect
 AST_URL = "http://localhost:8088/ari"   # lưu ý có /ari
 APP     = "voip-ai-agent"               # khớp dialplan: Stasis("voip-ai-agent")
 USER    = "vitalpbx"
-PASS    = "zcWGYbNnPer2YUBTg433EMuVs"
+PASS    = "wqpmDW40gfXc8FNnvRwM0zEbFNXZIF85"
 
 async def main():
     async with connect(AST_URL, APP, USER, PASS) as ari:

@@ -1,106 +1,116 @@
+# 📞 AI Agent cho VoIP sử dụng Streaming thời gian thực
 
-# 📞 AI Agent for VoIP using Real-time Streaming
+## 🌟 Giới thiệu Dự án
 
-## 🌟 Project Introduction
+Dự án này cung cấp một AI Agent hiệu suất cao, độ trễ thấp, có khả năng xử lý các cuộc gọi đến trên nền tảng VoIP. Hệ thống sử dụng kiến trúc streaming thời gian thực hiện đại để mang lại trải nghiệm hội thoại tự nhiên và phản hồi nhanh.
 
-This project provides a high-performance, low-latency AI agent capable of handling inbound phone calls on a VoIP platform. It uses a modern, real-time streaming architecture to deliver a natural and responsive conversational experience.
+Hệ thống được xây dựng trên **Asterisk 20** (trong VitalPBX) trên **Debian 12**, tận dụng server với **8 GPU NVIDIA V100** để chạy các mô hình AI tiên tiến cho tiếng Việt và tiếng Anh.
 
-The system is built on **Asterisk 20** (within VitalPBX) on **Debian 12**, leveraging a powerful server with **8 NVIDIA V100 GPUs** to run state-of-the-art AI models for Vietnamese and English.
+- **🤖 Công nghệ AI cốt lõi**: Agent sử dụng Google Cloud API cho Speech-to-Text, mô hình Llama 4 (thông qua `llama.cpp` hoặc `unsloth`) cho hiểu ngôn ngữ tự nhiên, và mô hình NVIDIA NeMo cho Text-to-Speech chất lượng cao.
+- **🎯 Mục tiêu chính**: Đạt được độ trễ end-to-end dưới 500ms thông qua một pipeline streaming hoàn chỉnh, từ khi người dùng nói đến khi họ nghe phản hồi của AI.
+- **🔗 Tích hợp**: Hệ thống được thiết kế với kiến trúc module hóa, cho phép tích hợp linh hoạt với các nền tảng CRM như Zoho hoặc Salesforce thông qua chức năng gọi công cụ (function calling) trong mô hình NLP.
 
-- **🤖 Core AI Technologies**: The agent uses Google's API for Speech-to-Text, a Llama 4-based model for natural language understanding, and an NVIDIA NeMo-based model for high-quality text-to-speech.
-- **🎯 Key Goal**: Achieve an end-to-end latency of under 800ms through a fully streaming pipeline, from the moment the user speaks to the moment they hear the AI's response.
-- **🔗 Integrations**: The system is designed with a modular architecture, allowing for flexible integration with CRM platforms like Zoho or Salesforce through function calling in the NLP model.
+## 🏗️ Kiến trúc Hệ thống (Thống nhất & Container hóa - Cấu hình V1)
 
-## 🏗️ System Architecture (Unified)
+Kiến trúc của dự án được thiết kế để có khả năng mở rộng và độ trễ thấp, tập trung vào **Asterisk REST Interface (ARI)** để điều khiển cuộc gọi.
 
-The project's architecture is designed for scalability and low latency, centered around the **Asterisk REST Interface (ARI)** for call control.
-
-- **Hardware**: Server with 8x NVIDIA V100 GPUs (32GB VRAM).
+- **Phần cứng**: Server với 8x NVIDIA V100 GPUs (32GB VRAM).
 - **VoIP**: VitalPBX / Asterisk 20.
-- **Application Core**: An asynchronous Python application (`src/main.py`) that connects to Asterisk via ARI.
+- **Lõi ứng dụng**: Một ứng dụng Python không đồng bộ kết nối với Asterisk qua ARI.
+- **Container hóa**: Ứng dụng được đóng gói hoàn toàn bằng Docker và Docker Compose, với các môi trường build riêng biệt cho các service NLP và TTS để quản lý xung đột dependency phức tạp.
 
-### Data Flow
+### Luồng Dữ liệu (Streaming-First)
 
-The entire process is event-driven and built on streaming:
+Toàn bộ quá trình được điều khiển bởi sự kiện và xây dựng trên streaming:
 
 ```
-📞 Inbound Call (VitalPBX)
+📞 Cuộc gọi đến (VitalPBX)
    ↓
-🎙️ Asterisk sends 'StasisStart' event to the Python App via ARI (WebSocket)
+🎙️ Asterisk gửi sự kiện 'StasisStart' đến ứng dụng Python qua ARI (WebSocket)
    ↓
-🐍 App creates a dedicated 'CallHandler' for the call (`src/core/call_handler.py`)
-   1. Answers the call.
-   2. Tells Asterisk to fork the incoming audio and stream it to a local UDP port.
+🐍 Service 'app' tạo một 'CallHandler' (trong app/audio/stream.py) cho cuộc gọi
+   1. Trả lời cuộc gọi.
+   2. Yêu cầu Asterisk gửi một bản sao (fork) của luồng audio đến một cổng UDP cục bộ.
    ↓
-🎧 Real-time Audio Processing
-   1. A UDP listener receives RTP packets and pushes the raw audio to the STT module (RTPAudioForwarder).
-   2. **STT**: The audio is streamed to the **Google Cloud Speech-to-Text API** (STTModule).
-   3. The transcribed text is received.
+🎧 Xử lý Audio thời gian thực
+   1. Một UDP listener nhận các gói RTP và đẩy audio thô đến Google Cloud STT API.
+   2. **STT**: Audio được stream đến **Google Cloud Speech-to-Text API**.
+   3. Văn bản đã chuyển đổi được nhận.
    ↓
-🧠 AI Processing
-   1. **NLP**: The text is sent to the locally-hosted **Llama 4 Scout** model for intent processing (NLPModule).
-   2. The NLP model's response text is generated.
+🧠 Xử lý AI
+   1. **NLP**: Văn bản được gửi đến mô hình **Llama 4 Scout** (được host cục bộ, thông qua app/nlu/agent.py và app/nlu/llama.py) để xử lý ý định.
+   2. Văn bản phản hồi từ mô hình NLP được tạo.
    ↓
-🗣️ Speech Synthesis
-   1. **TTS**: The response text is sent to a separate, dedicated **NVIDIA NeMo TTS Server** (`tts_server/server.py`) via a client (TTSModule).
-   2. This server uses a two-step pipeline for high-quality audio:
-      - **Step 1 (Spectrogram):** A **FastPitch** model converts text into a mel-spectrogram.
-      - **Step 2 (Audio):** A **BigVGAN** model converts the spectrogram into an audible waveform.
-   3. The generated audio is streamed back to the main application.
+🗣️ Tổng hợp giọng nói
+   1. **TTS**: Văn bản phản hồi được gửi đến một **NVIDIA NeMo TTS Server** riêng biệt (service 'tts', thông qua app/tts/client.py).
+   2. Server TTS sử dụng pipeline hai bước để tạo audio chất lượng cao:
+      - **Bước 1 (Spectrogram):** Mô hình **FastPitch** chuyển văn bản thành mel-spectrogram.
+      - **Bước 2 (Audio):** Mô hình **BigVGAN** (vocoder) chuyển spectrogram thành dạng sóng âm thanh.
+   3. Audio được tạo ra được stream trở lại ứng dụng chính.
    ↓
-🔊 Playback
-   1. The `CallHandler` plays the received audio stream back to the caller via Asterisk.
-   2. The system supports barge-in, allowing the user to interrupt the AI.
+🔊 Phát lại
+   1. 'CallHandler' phát luồng audio nhận được trở lại cho người gọi qua Asterisk.
+   2. Hệ thống hỗ trợ barge-in (người dùng ngắt lời).
    ↓
-👋 Hangup
+👋 Gác máy
 ```
 
-### Core Components
+### Các thành phần cốt lõi
 
-- **🖥️ AI Backend**:
-  - **STT**: **Google Cloud Speech-to-Text API**. Requires `GOOGLE_APPLICATION_CREDENTIALS` to be configured.
-  - **NLP**: **Llama 4 Scout** model, loaded and managed by `src/core/nlp_module.py`.
-  - **TTS**: A dedicated **FastAPI server** responsible for all Text-to-Speech processing.
-    -   **Architecture**: Decouples heavy TTS processing from the core call-handling logic to ensure stability and performance.
-    -   **Core Technology**: Uses a 2-step pipeline: **NeMo FastPitch** for spectrogram generation and **NVIDIA BigVGAN** as the vocoder for high-quality waveform synthesis.
-    -   **Language Strategy**:
-        -   **English**: Utilizes high-quality, pre-trained models from NVIDIA.
-        -   **Vietnamese**: A custom **FastPitch** model fine-tuned on the `phoaudiobook` dataset. The fine-tuning process is managed by scripts in `scripts/training/`.
-- **📡 VoIP Integration**:
-  - Uses **ARI (Asterisk REST Interface)** for fine-grained, real-time call control. The `src/core/call_handler.py` contains all the logic for interacting with the Asterisk channel.
+- **🖥️ AI Backend (Container hóa)**:
+  - **STT**: **Google Cloud Speech-to-Text API**. Yêu cầu `GOOGLE_APPLICATION_CREDENTIALS` được cấu hình.
+  - **NLP**: Mô hình **Llama 4 Scout**, được tải và quản lý bởi `app/nlu/llama.py` (sử dụng `llama_cpp` hoặc `unsloth`). Chạy trong một Docker container riêng (`app`) với các dependency được tối ưu hóa.
+  - **TTS**: Một **FastAPI server** riêng biệt (`tts_server/api.py`) chịu trách nhiệm cho tất cả quá trình Text-to-Speech. Chạy trong một Docker container riêng (`tts`) với các dependency được tối ưu hóa.
+    -   **Kiến trúc**: Tách biệt quá trình xử lý TTS nặng khỏi logic xử lý cuộc gọi cốt lõi để đảm bảo sự ổn định và hiệu suất.
+    -   **Công nghệ cốt lõi**: Sử dụng pipeline 2 bước: **NeMo FastPitch** để tạo spectrogram và **NVIDIA BigVGAN** làm vocoder cho tổng hợp dạng sóng chất lượng cao. Các model được tải bằng phương thức `from_pretrained()` từ NVIDIA NGC.
+    -   **Chiến lược ngôn ngữ**: Hỗ trợ tiếng Anh và tiếng Việt. Mô hình **FastPitch** tùy chỉnh được fine-tuned trên dataset `phoaudiobook` cho tiếng Việt.
+- **📡 Tích hợp VoIP**: Sử dụng **ARI (Asterisk REST Interface)** để điều khiển cuộc gọi chi tiết, thời gian thực. `app/audio/stream.py` chứa logic giao tiếp với kênh Asterisk.
 
-## 🚀 TTS Implementation Plan
+## ⚙️ Môi trường Docker & Quản lý Dependency (Cấu hình V1)
 
-This plan outlines the step-by-step process for deploying the complete bilingual TTS system.
+Để giải quyết các xung đột dependency phức tạp giữa các thư viện AI (ví dụ: `unsloth` và `nemo_toolkit`), dự án sử dụng kiến trúc Docker đa container với các môi trường build riêng biệt. Phần này trình bày chi tiết các dependency và chiến lược cài đặt cho từng service.
 
-### Stage 1: Foundation & Model Setup
+### 6.1. Service `app` (NLP/Agent)
 
-1.  **Project Structure**: The codebase has been reorganized to support the new architecture. (Done)
-2.  **Environment Setup**: All necessary libraries (`nemo_toolkit`, `fastapi`, etc.) are defined in `requirements.txt`. (Done)
-3.  **Download Pre-trained Models**: Manually download the pre-trained models:
-    *   **FastPitch (English):** `nvidia/tts_en_fastpitch` -> Placed in `models/tts/en/`
-    *   **BigVGAN (Universal):** `nvidia/bigvgan_v2_22khz_80band_256x` -> Placed in `models/tts/vocoder/`
-    *   **Status:** Done.
-4.  **Docker Environment Configuration**: 
-    *   Install Docker Engine and Docker Compose plugin (using `scripts/setup/install_docker.sh`).
-    *   Create `.dockerignore` to optimize build context.
-    *   Configure Docker to use `/data` partition for its data root.
-    *   Optimize `Dockerfile` and `requirements.txt` for robust build (including system dependencies like `build-essential`, `sox`, `python3.11-dev`, and Python build-time dependencies like `numpy`, `typing_extensions`, `Cython`, `wheel`).
-    *   **Status:** Done.
-5.  **Update Environment Variables**: Update the `.env` file with the correct paths to the downloaded models. (Done)
+*   **Base Image**: `nvidia/cuda:12.2.2-cudnn8-runtime-ubuntu22.04`
+*   **Python Version**: `3.11`
+*   **System Dependencies**: `python3.11-venv`, `python3.11-dev`, `build-essential`, `git`, `cmake`, `ninja-build`, `ffmpeg`, `sox`, `libsndfile1`, `curl`, `ca-certificates`, `pkg-config`.
+*   **Python Libraries** (từ `requirements-app.txt`):
+    *   `torch==2.5.1`, `torchvision==0.20.1`, `torchaudio==2.5.1`
+    *   `unsloth[cu121-torch251]`
+    *   `llama-cpp-python==0.2.90`
+    *   `langgraph==0.2.24`, `langchain==0.3.2`
+    *   `google-cloud-speech==2.26.0`
+    *   `aiohttp==3.10.5`, `websockets==12.0`
+    *   `numpy==1.26.4`, `pandas==2.2.2`, `scipy==1.14.1`, `onnxruntime-gpu==1.17.1`
+    *   `pyyaml==6.0.2`, `python-dotenv==1.0.1`, `pydub==0.25.1`, `structlog==24.1.0`, `uvloop==0.20.0`
 
-### Stage 2: Server Launch (English TTS)
+### 6.2. Service `tts` (TTS NeMo)
 
-1.  **Configure Environment**: Update the `.env` file with the correct paths to the models downloaded in Stage 1. (Done)
-2.  **Launch Server**: Start the FastAPI server in `tts_server/server.py`. At this point, the server will be fully capable of synthesizing high-quality English speech.
+*   **Base Image**: `nvidia/cuda:12.1.1-cudnn8-runtime-ubuntu22.04`
+*   **Python Version**: `3.10`
+*   **System Dependencies**: `python3.10-venv`, `python3.10-dev`, `build-essential`, `pkg-config`, `ffmpeg`, `sox`, `libsndfile1`, `curl`, `ca-certificates`.
+*   **Python Libraries** (từ `requirements-tts.txt` và cài đặt sớm):
+    *   `Cython>=0.29`, `numpy==1.26.4`, `typing_extensions` (cài đặt sớm)
+    *   `nemo_toolkit[tts]==1.23.0`
+    *   `torch==2.1.2`, `torchaudio==2.1.2`
+    *   `fastapi==0.115.0`, `uvicorn[standard]==0.30.6`
+    *   `transformers==4.36.2`, `huggingface_hub==0.19.4`, `datasets==2.14.7`, `pyarrow==12.0.1`
+    *   `soundfile==0.12.1`, `librosa==0.10.2`, `structlog==24.1.0`
 
-### Stage 3: Vietnamese Model Fine-tuning
+## 🚀 Quy trình Phát triển & Triển khai
 
-1.  **Data Preparation**: Run the data preparation scripts (`prepare_audio_parquet.py`, `create_manifest.py`) to process the `phoaudiobook` dataset, creating train/validation/test manifests. (Done)
-2.  **Run Fine-tuning**: Execute `run_finetune.py` with the `config_finetune_vi.yaml` config to create a custom Vietnamese FastPitch model. This will be saved in `models/tts/vi/`. (Configuration updated)
+- **Phát triển cục bộ**: Mã nguồn có thể được mount vào container thông qua Docker volumes để lặp lại nhanh chóng mà không cần rebuild image.
+- **Kiểm thử**: Sử dụng `docker compose build` cho các thay đổi dependency, `docker compose restart <service>` cho các thay đổi mã nguồn.
+- **Triển khai**: Dễ dàng triển khai trên bất kỳ server nào có Docker và hỗ trợ NVIDIA GPU.
 
-### Stage 4: Final Integration & Completion
+## 📚 Tài liệu & Kế hoạch
 
-1.  **Update Configuration**: Modify the `.env` file again to point to the newly trained Vietnamese model.
-2.  **Restart Server**: Relaunch the TTS server.
-3.  **Verification**: The system is now complete, supporting both English and Vietnamese TTS. Place calls to test both languages.
+- **`docs/PLAN.md`**: Chứa kế hoạch triển khai kỹ thuật chi tiết, bao gồm lộ trình phát triển NLP toàn diện.
+- **`.env`**: Quản lý các biến môi trường, bao gồm thông tin đăng nhập ARI và đường dẫn model. File này được loại trừ khỏi Git vì lý do bảo mật.
+
+## ⚠️ Bảo mật & Các thực hành tốt nhất
+
+- **Thông tin nhạy cảm**: Tất cả thông tin đăng nhập (ví dụ: mật khẩu ARI, API keys) được quản lý thông qua file `.env` và được loại trừ khỏi kiểm soát phiên bản (`.gitignore`).
+- **Lịch sử Git**: Dữ liệu nhạy cảm được xóa khỏi lịch sử Git bằng `git filter-repo` nếu vô tình bị commit.
+- **Quản lý Dependency**: Pin phiên bản nghiêm ngặt và môi trường Docker riêng biệt đảm bảo sự ổn định và bảo mật.

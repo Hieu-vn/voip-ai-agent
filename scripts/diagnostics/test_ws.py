@@ -4,7 +4,7 @@ import asyncio, aiohttp, base64
 AST_HOST = "http://localhost:8088"  # không có /ari ở cuối
 APP      = "voip-ai-agent"
 USER     = "vitalpbx"
-PASS     = "zcWGYbNnPer2YUBTg433EMuVs"
+PASS     = "wqpmDW40gfXc8FNnvRwM0zEbFNXZIF85"
 
 async def main():
     api_key = f"{USER}:{PASS}"

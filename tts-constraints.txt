@@ -1,0 +1,6 @@
+numpy==1.26.4
+pyarrow==12.0.1
+pandas==2.2.2
+youtokentome==1.0.6
+cdifflib==1.2.6
+typing_extensions>=4.8.0

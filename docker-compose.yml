@@ -1,43 +1,56 @@
-version: '3.8'
-
 services:
   app:
     build:
       context: .
-      dockerfile: Dockerfile
-    container_name: voip_app
-    command: ["python", "-m", "src.main"]
-    depends_on:
-      - tts_server
-    env_file:
-      - .env
-    # The main app doesn't need a GPU
-    # It connects to Asterisk (externally) and the tts_server (internally)
-    stdin_open: true
-    tty: true
-    # We don't expose ports here as ARI is an outbound connection
-    # and it communicates with tts_server via the internal docker network.
-
-  tts_server:
-    build:
-      context: .
-      dockerfile: Dockerfile
-    container_name: voip_tts_server
-    ports:
-      - "8001:8001"
-    env_file:
-      - .env
+      dockerfile: Dockerfile.app
+    env_file: .env
     volumes:
-      # Mount the models directory into the container
-      # The paths in .env should be relative to this mount point (e.g., /models/tts/vi/...)
-      - ./models:/app/models
+      - ./secrets:/run/secrets:ro
+      - ./cache:/root/.cache/huggingface
+      - ./models/nlp:/models/nlp:ro
+    network_mode: "host"
     deploy:
       resources:
         reservations:
           devices:
             - driver: nvidia
-              count: 1 # Request 1 GPU. Change to 'all' to use all available GPUs.
+              count: 6
               capabilities: [gpu]
-    # The default CMD in the Dockerfile is to run this server
-    stdin_open: true
-    tty: true
+    environment:
+      - NVIDIA_VISIBLE_DEVICES=0,1,2,3,4,5
+      - LLAMA_BACKEND=llama_cpp
+      - LLAMA_MODEL_PATH=/models/nlp/llama-4-scout-17b-gguf-q4_k_m.gguf
+      - ARI_URL=https://asterisk:8089/ari
+    healthcheck:
+      test: ["CMD", "python", "-m", "tools.healthcheck_app"]
+      interval: 15s
+      timeout: 3s
+      retries: 10
+      start_period: 20s
+
+  tts:
+    build:
+      context: .
+      dockerfile: Dockerfile.tts
+    env_file: .env
+    volumes:
+      - ./cache:/root/.cache/huggingface
+      - ./models/tts:/models/tts:ro
+    network_mode: "host"
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 2
+              capabilities: [gpu]
+    environment:
+      - NVIDIA_VISIBLE_DEVICES=6,7
+      - FASTPITCH_MODEL_NAME=nvidia/tts_en_fastpitch
+      - VOCODER_MODEL_NAME=nvidia/tts_hifigan
+    healthcheck:
+      test: ["CMD", "python", "-m", "tts_server.healthcheck"]
+      interval: 15s
+      timeout: 3s
+      retries: 10
+      start_period: 20s

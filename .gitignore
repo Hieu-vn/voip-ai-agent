@@ -37,6 +37,7 @@ htmlcov/
 # Hugging Face
 # Cache directories for models, datasets, etc.
 # These can be very large and should not be committed.
+cache/
 .cache/huggingface/
 hf_cache/
 transformers_cache/

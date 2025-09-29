@@ -1,0 +1,50 @@
+FROM nvidia/cuda:12.1.1-cudnn8-runtime-ubuntu22.04
+
+ENV PIP_DISABLE_PIP_VERSION_CHECK=1 PIP_PREFER_BINARY=1 \
+    PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1 \
+    DEBIAN_FRONTEND=noninteractive
+
+# 1) Cài Python + audio libs + toolchain build
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    python3.10 python3.10-venv python3.10-distutils python3.10-dev \
+    build-essential pkg-config \
+    ffmpeg sox libsndfile1 ca-certificates curl \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN curl -sS https://bootstrap.pypa.io/get-pip.py | python3.10
+
+WORKDIR /srv
+COPY requirements-tts.txt .
+COPY tts-constraints.txt .
+
+# 2) Venv + cài pre-reqs rồi mới install requirements
+RUN python3.10 -m venv /opt/venv && . /opt/venv/bin/activate && \
+    pip install --upgrade pip wheel && \
+    # Cài sẵn nền tảng theo constraints (đảm bảo pyarrow build/ABI theo numpy 1.26)
+    pip install -c tts-constraints.txt "numpy==1.26.4" "pyarrow==12.0.1" "pandas==2.2.2" \
+                "typing_extensions>=4.8.0" "Cython>=0.29" && \
+    # Cài toàn bộ requirements, nhưng giữ constraints & tắt build isolation
+    pip install --no-cache-dir -r requirements-tts.txt -c tts-constraints.txt --no-build-isolation && \
+    # Kiểm tra ngay ở build-time (fail sớm nếu NumPy bị nâng)
+    python - <<'PY'
+import numpy, pyarrow, pandas
+print("NUMPY=", numpy.__version__)
+print("PYARROW=", pyarrow.__version__)
+print("PANDAS=", pandas.__version__)
+assert numpy.__version__.startswith("1.26."), "NumPy đã bị nâng ngoài ý muốn!"
+PY
+
+ENV PATH="/opt/venv/bin:$PATH" PYTHONPATH=""
+
+COPY tts_server/ ./tts_server
+
+# 3) (Tuỳ chọn) dọn toolchain để giảm size image ~200MB+
+#    COMMENT nếu bạn muốn giữ lại để sau này dễ cài thêm lib
+RUN apt-get purge -y build-essential python3.10-dev pkg-config && \
+    apt-get autoremove -y && \
+    rm -rf /var/lib/apt/lists/*
+
+HEALTHCHECK --interval=15s --timeout=3s --start-period=20s --retries=10 \
+  CMD python -m tts_server.healthcheck
+
+CMD ["python", "-m", "tts_server.api"]

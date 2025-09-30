@@ -1,4 +1,6 @@
-import socket
+﻿import socket
+import struct
+import random
 import structlog
 import asyncio
 import os
@@ -7,6 +9,7 @@ from typing import Optional
 from app.tts.client import TTSClient
 from app.stt.client import SttClient
 from app.nlu.agent import Agent as NluAgent # Rename for clarity
+from app.dialog.state import DialogState
 from app.utils.text_normalizer import TextNormalizer
 from app.evaluation.tracker import evaluation_tracker
 
@@ -21,6 +24,9 @@ class RtpServerProtocol(asyncio.DatagramProtocol):
         self.call_handler = call_handler
         self.transport: Optional[asyncio.DatagramTransport] = None
         self.remote_addr = None
+        self.sequence_number = random.randint(0, 0xFFFF)
+        self.timestamp = random.randint(0, 0xFFFFFFFF)
+        self.ssrc = random.getrandbits(32)
         super().__init__()
 
     def connection_made(self, transport: asyncio.DatagramTransport):
@@ -45,16 +51,28 @@ class RtpServerProtocol(asyncio.DatagramProtocol):
         self.call_handler.log.error("RTP server protocol error", exc_info=exc)
 
     def send_audio(self, audio_chunk: bytes):
-        """Sends a raw audio chunk back to Asterisk, wrapped in a simple RTP header."""
-        if self.transport and self.remote_addr:
-            # This is a simplified RTP header. For production, a proper library
-            # for RTP packetization (handling sequence numbers, timestamps) is recommended.
-            header = os.urandom(12) # Placeholder for a real RTP header
-            packet = header + audio_chunk
-            try:
-                self.transport.sendto(packet, self.remote_addr)
-            except Exception as e:
-                self.call_handler.log.error("Failed to send RTP packet", exc_info=e)
+        """Sends a raw audio chunk back to Asterisk, wrapped in an RTP header."""
+        if not (self.transport and self.remote_addr):
+            return
+        payload_length = len(audio_chunk)
+        if payload_length == 0:
+            return
+        samples = payload_length // 2  # 16-bit PCM @ 8 kHz -> 2 bytes per sample
+        header = struct.pack(
+            "!BBHII",
+            0x80,  # V=2, P=0, X=0, CC=0
+            96,    # M=0, PT=96 (dynamic payload type)
+            self.sequence_number & 0xFFFF,
+            self.timestamp & 0xFFFFFFFF,
+            self.ssrc,
+        )
+        packet = header + audio_chunk
+        self.sequence_number = (self.sequence_number + 1) & 0xFFFF
+        self.timestamp = (self.timestamp + samples) & 0xFFFFFFFF
+        try:
+            self.transport.sendto(packet, self.remote_addr)
+        except Exception as e:
+            self.call_handler.log.error("Failed to send RTP packet", exc_info=e)
 
     def close(self):
         """Closes the UDP transport."""
@@ -75,6 +93,7 @@ class CallHandler:
         self.external_media_channel = None
         self.is_active = True
         self.nlu_agent: Optional[NluAgent] = None
+        self.dialog_state: Optional[DialogState] = None
         self.turn_index = 0
 
         # Instantiate service clients and utilities
@@ -129,7 +148,7 @@ class CallHandler:
             await asyncio.sleep(0.5) # Wait for media to be active
 
             # 4. Welcome message
-            await self.play_tts_audio("Xin chào, tôi là trợ lý ảo, tôi có thể giúp gì cho bạn?")
+            await self.play_tts_audio("Xin chÃ o, tÃ´i lÃ  trá»£ lÃ½ áº£o, tÃ´i cÃ³ thá»ƒ giÃºp gÃ¬ cho báº¡n?")
 
             # 5. Main loop - logic is now event-driven via callbacks
             while self.is_active:
@@ -156,9 +175,19 @@ class CallHandler:
             self.log.info("STT Finalized", original=transcript, normalized=normalized_transcript)
 
             # 2. Pass normalized text to the NLU agent
-            agent_state = await self.nlu_agent.respond(normalized_transcript)
-            agent_reply_text = agent_state.get("reply", "")
-            self.log.info("NLU Agent responded", response=agent_reply_text, state=agent_state)
+            try:
+                self.dialog_state = await self.nlu_agent.respond(
+                    self.channel.id,
+                    normalized_transcript,
+                    self.dialog_state,
+                )
+            except Exception as exc:
+                self.log.error("NLU agent failed", exc_info=exc)
+                return
+
+            agent_reply_text = self.dialog_state.last_bot_text or ""
+            state_payload = self.dialog_state.model_dump()
+            self.log.info("NLU Agent responded", response=agent_reply_text, state=state_payload)
 
             # 3. Log the turn for evaluation
             evaluation_tracker.log_turn(
@@ -166,14 +195,13 @@ class CallHandler:
                 turn_index=self.turn_index,
                 user_text=normalized_transcript,
                 bot_text=agent_reply_text,
-                metadata=agent_state,
+                metadata=state_payload,
             )
             self.turn_index += 1
 
             # 4. Play the agent's response back to the user
             if agent_reply_text:
                 await self.play_tts_audio(agent_reply_text)
-
     async def play_tts_audio(self, text: str):
         """Synthesizes text using the TTS client and streams it to Asterisk via RTP."""
         if not self.rtp_server:
@@ -221,3 +249,6 @@ class CallHandler:
             await asyncio.gather(*hangup_tasks, return_exceptions=True)
         
         self.log.info("Cleanup complete.")
+
+
+

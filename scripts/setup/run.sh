@@ -1,24 +1,22 @@
 #!/usr/bin/env bash
 set -euo pipefail # Exit on error, unset variables, pipefail
 
-# Tìm thư mục gốc của dự án, nơi script này đang nằm
+# T�m thu m?c g?c c?a d? �n
 DIR=$(cd "$(dirname "$0")/.." && pwd)
 
-# Thêm thư mục 'src' vào PYTHONPATH để Python có thể tìm thấy các module
-export PYTHONPATH="$DIR/src"
-
-# Di chuyển vào thư mục gốc của dự án
+# Di chuy?n v�o thu m?c g?c c?a d? �n
 cd "$DIR"
 
-# Kích hoạt virtual environment
-if [ -d "venv" ]; then
+# K�ch ho?t virtual environment
+if [ -d ".venv" ]; then
     echo "Activating virtual environment..."
-    source "venv/bin/activate"
+    # shellcheck disable=SC1091
+    source ".venv/bin/activate"
 else
-    echo "Error: Virtual environment 'venv' not found. Please run 'scripts/setup_env.sh' first."
-    exit 1 # Exit if venv is not found
+    echo "Error: Virtual environment '.venv' not found. Please run 'scripts/setup_env.sh' first."
+    exit 1
 fi
 
-# Chạy ứng dụng chính
-echo "Starting AI Agent application..."
-python3 "src/main.py"
+# Ch?y ?ng d?ng ch�nh
+echo "Starting VoIP AI Agent application..."
+python3 -m app.main

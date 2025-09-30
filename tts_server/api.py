@@ -1,4 +1,4 @@
-"""
+﻿"""
 TTS Server for VoIP AI Agent, using NeMo and FastAPI.
 
 This server provides a high-performance, low-latency Text-to-Speech (TTS) service.
@@ -216,7 +216,7 @@ async def audio_synthesis_generator(text: str, request_id: str):
             chunk_size_bytes = 2048  # Send 2KB chunks
             for i in range(0, len(audio_int16.tobytes()), chunk_size_bytes):
                 yield audio_int16.tobytes()[i:i+chunk_size_bytes]
-                await asyncio.sleep(0.01) # Small sleep to prevent blocking the event loop entirely
+                await asyncio.sleep(0)  # Yield control without adding latency
 
     except Exception as e:
         log.error("Error during audio synthesis", exc_info=e, request_id=request_id)

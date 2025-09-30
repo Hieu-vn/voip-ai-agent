@@ -38,8 +38,12 @@ Toàn bộ quá trình được điều khiển bởi sự kiện và xây dựn
    3. Văn bản đã chuyển đổi được nhận.
    ↓
 🧠 Xử lý AI
-   1. **NLP**: Văn bản được gửi đến mô hình **Llama 4 Scout** (được host cục bộ, thông qua app/nlu/agent.py và app/nlu/llama.py) để xử lý ý định.
-   2. Văn bản phản hồi từ mô hình NLP được tạo.
+   1. **Text Normalization**: Văn bản từ STT được chuẩn hóa (số thành chữ, v.v.).
+   2. **Emotion Analysis**: Cảm xúc của người dùng được phân tích.
+   3. **Guardrails**: PII được lọc khỏi văn bản người dùng.
+   4. **NLP**: Văn bản đã lọc PII và ngữ cảnh cảm xúc được gửi đến mô hình **Llama 4 Scout** (được host cục bộ, thông qua app/nlu/agent.py và app/nlu/llama.py) để xử lý ý định.
+   5. **Guardrails**: Phản hồi từ LLM được kiểm tra an toàn; PII được khôi phục.
+   6. Văn bản phản hồi từ mô hình NLP được tạo.
    ↓
 🗣️ Tổng hợp giọng nói
    1. **TTS**: Văn bản phản hồi được gửi đến một **NVIDIA NeMo TTS Server** riêng biệt (service 'tts', thông qua app/tts/client.py).
@@ -50,7 +54,9 @@ Toàn bộ quá trình được điều khiển bởi sự kiện và xây dựn
    ↓
 🔊 Phát lại
    1. 'CallHandler' phát luồng audio nhận được trở lại cho người gọi qua Asterisk.
-   2. Hệ thống hỗ trợ barge-in (người dùng ngắt lời).
+   2. Hệ thống hỗ trợ **Barge-in** (người dùng ngắt lời) và **Reprompt** (nhắc lại khi im lặng).
+   ↓
+📊 **Evaluation Tracking**: Mỗi lượt thoại được ghi lại để đánh giá hiệu suất.
    ↓
 👋 Gác máy
 ```
@@ -60,12 +66,17 @@ Toàn bộ quá trình được điều khiển bởi sự kiện và xây dựn
 - **🖥️ AI Backend (Container hóa)**:
   - **STT**: **Google Cloud Speech-to-Text API**. Yêu cầu `GOOGLE_APPLICATION_CREDENTIALS` được cấu hình.
   - **NLP**: Mô hình **Llama 4 Scout**, được tải và quản lý bởi `app/nlu/llama.py` (sử dụng `llama_cpp` hoặc `unsloth`). Chạy trong một Docker container riêng (`app`) với các dependency được tối ưu hóa.
+    -   **Guardrails**: Lọc PII đầu vào, kiểm tra an toàn đầu ra.
+    -   **Text Normalization**: Chuẩn hóa văn bản từ STT.
+    -   **Emotion Analysis**: Phân tích cảm xúc người dùng để tạo phản hồi phù hợp.
   - **TTS**: Một **FastAPI server** riêng biệt (`tts_server/api.py`) chịu trách nhiệm cho tất cả quá trình Text-to-Speech. Chạy trong một Docker container riêng (`tts`) với các dependency được tối ưu hóa.
     -   **Kiến trúc**: Tách biệt quá trình xử lý TTS nặng khỏi logic xử lý cuộc gọi cốt lõi để đảm bảo sự ổn định và hiệu suất.
     -   **Công nghệ cốt lõi**: Sử dụng pipeline 2 bước: **NeMo FastPitch** để tạo spectrogram và **NVIDIA BigVGAN** làm vocoder cho tổng hợp dạng sóng chất lượng cao. Các model được tải bằng phương thức `from_pretrained()` từ NVIDIA NGC.
     -   **Chiến lược ngôn ngữ**: Hỗ trợ tiếng Anh và tiếng Việt. Mô hình **FastPitch** tùy chỉnh được fine-tuned trên dataset `phoaudiobook` cho tiếng Việt.
 - **📡 Tích hợp VoIP**: Sử dụng **ARI (Asterisk REST Interface)** để điều khiển cuộc gọi chi tiết, thời gian thực. `app/audio/stream.py` chứa logic giao tiếp với kênh Asterisk.
-
+  -   **Barge-in**: Cho phép người dùng ngắt lời AI.
+  -   **Reprompt**: Nhắc lại khi người dùng im lặng.
+- **📊 Evaluation Tracking**: Ghi lại chi tiết các lượt thoại để phân tích và đánh giá.
 ## ⚙️ Môi trường Docker & Quản lý Dependency (Cấu hình V1)
 
 Để giải quyết các xung đột dependency phức tạp giữa các thư viện AI (ví dụ: `unsloth` và `nemo_toolkit`), dự án sử dụng kiến trúc Docker đa container với các môi trường build riêng biệt. Phần này trình bày chi tiết các dependency và chiến lược cài đặt cho từng service.
@@ -84,25 +95,272 @@ Toàn bộ quá trình được điều khiển bởi sự kiện và xây dựn
     *   `aiohttp==3.10.5`, `websockets==12.0`
     *   `numpy==1.26.4`, `pandas==2.2.2`, `scipy==1.14.1`, `onnxruntime-gpu==1.17.1`
     *   `pyyaml==6.0.2`, `python-dotenv==1.0.1`, `pydub==0.25.1`, `structlog==24.1.0`, `uvloop==0.20.0`
+    *   `ari==1.0.0`
+    *   `opentelemetry-distro==0.46b0`, `opentelemetry-instrumentation-aiohttp-client==0.46b0`
+    *   `transformers` (dependency của `emotion_analyzer`)
 
 ### 6.2. Service `tts` (TTS NeMo)
 
 *   **Base Image**: `nvidia/cuda:12.1.1-cudnn8-runtime-ubuntu22.04`
 *   **Python Version**: `3.10`
 *   **System Dependencies**: `python3.10-venv`, `python3.10-dev`, `build-essential`, `pkg-config`, `ffmpeg`, `sox`, `libsndfile1`, `curl`, `ca-certificates`.
-*   **Python Libraries** (từ `requirements-tts.txt` và cài đặt sớm):
+*   **Python Libraries** (cài đặt sớm và từ `requirements-tts.txt`):
     *   `Cython>=0.29`, `numpy==1.26.4`, `typing_extensions` (cài đặt sớm)
     *   `nemo_toolkit[tts]==1.23.0`
     *   `torch==2.1.2`, `torchaudio==2.1.2`
     *   `fastapi==0.115.0`, `uvicorn[standard]==0.30.6`
     *   `transformers==4.36.2`, `huggingface_hub==0.19.4`, `datasets==2.14.7`, `pyarrow==12.0.1`
     *   `soundfile==0.12.1`, `librosa==0.10.2`, `structlog==24.1.0`
+    *   `opentelemetry-distro==0.46b0`, `opentelemetry-exporter-otlp==1.25.0`, `opentelemetry-instrumentation-fastapi==0.46b0`
 
 ## 🚀 Quy trình Phát triển & Triển khai
 
 - **Phát triển cục bộ**: Mã nguồn có thể được mount vào container thông qua Docker volumes để lặp lại nhanh chóng mà không cần rebuild image.
 - **Kiểm thử**: Sử dụng `docker compose build` cho các thay đổi dependency, `docker compose restart <service>` cho các thay đổi mã nguồn.
 - **Triển khai**: Dễ dàng triển khai trên bất kỳ server nào có Docker và hỗ trợ NVIDIA GPU.
+
+## 🚀 Hướng dẫn Cài đặt & Chạy
+
+1.  **Cấu hình môi trường**:
+    *   Tạo file `.env` trong thư mục gốc của dự án, dựa trên `.env.example`.
+    *   Đảm bảo các biến môi trường cho ARI (URL, username, password), Google Cloud (Project ID, Recognizer ID, credentials) và đường dẫn model LLM được cấu hình chính xác.
+    *   Đặt file model GGUF của bạn (ví dụ: `llama-4-scout-17b-gguf-q4_k_m.gguf`) vào thư mục `./models/nlp`.
+2.  **Build Docker Images**:
+    ```bash
+    docker compose build --no-cache app tts
+    ```
+3.  **Khởi chạy Services**:
+    ```bash
+    docker compose up -d
+    ```
+4.  **Cấu hình Asterisk**:
+    *   Đảm bảo Asterisk đang chạy và ARI được bật (xem `ari.conf`, `http.conf`).
+    *   Cấu hình dialplan để đẩy cuộc gọi vào ứng dụng Stasis `ai_app` (ví dụ trong `extensions.conf`):
+        ```ini
+        ; extensions.conf
+        [ivr-ai]
+        exten => _X.,1,NoOp(Hieu-VoIP AI)
+         same => n,Set(TALK_DETECT(set)=200,1000)       ; talk>=200ms, silence>=1000ms
+         same => n,Stasis(ai_app)
+         same => n,Hangup()
+        ```
+5.  **Kiểm tra**: Thực hiện cuộc gọi đến số đã cấu hình trong dialplan và kiểm tra log của các service Docker.
+
+## 🚀 Hướng dẫn Cài đặt & Chạy
+
+1.  **Cấu hình môi trường**:
+    *   Tạo file `.env` trong thư mục gốc của dự án, dựa trên `.env.example`.
+    *   Đảm bảo các biến môi trường cho ARI (URL, username, password), Google Cloud (Project ID, Recognizer ID, credentials) và đường dẫn model LLM được cấu hình chính xác.
+    *   Đặt file model GGUF của bạn (ví dụ: `llama-4-scout-17b-gguf-q4_k_m.gguf`) vào thư mục `./models/nlp`.
+2.  **Build Docker Images**:
+    ```bash
+    docker compose build --no-cache app tts
+    ```
+3.  **Khởi chạy Services**:
+    ```bash
+    docker compose up -d
+    ```
+4.  **Cấu hình Asterisk**:
+    *   Đảm bảo Asterisk đang chạy và ARI được bật (xem `ari.conf`, `http.conf`).
+    *   Cấu hình dialplan để đẩy cuộc gọi vào ứng dụng Stasis `ai_app` (ví dụ trong `extensions.conf`):
+        ```ini
+        ; extensions.conf
+        [ivr-ai]
+        exten => _X.,1,NoOp(Hieu-VoIP AI)
+         same => n,Set(TALK_DETECT(set)=200,1000)       ; talk>=200ms, silence>=1000ms
+         same => n,Stasis(ai_app)
+         same => n,Hangup()
+        ```
+5.  **Kiểm tra**: Thực hiện cuộc gọi đến số đã cấu hình trong dialplan và kiểm tra log của các service Docker.
+
+## 🚀 Hướng dẫn Cài đặt & Chạy
+
+1.  **Cấu hình môi trường**:
+    *   Tạo file `.env` trong thư mục gốc của dự án, dựa trên `.env.example`.
+    *   Đảm bảo các biến môi trường cho ARI (URL, username, password), Google Cloud (Project ID, Recognizer ID, credentials) và đường dẫn model LLM được cấu hình chính xác.
+    *   Đặt file model GGUF của bạn (ví dụ: `llama-4-scout-17b-gguf-q4_k_m.gguf`) vào thư mục `./models/nlp`.
+2.  **Build Docker Images**:
+    ```bash
+    docker compose build --no-cache app tts
+    ```
+3.  **Khởi chạy Services**:
+    ```bash
+    docker compose up -d
+    ```
+4.  **Cấu hình Asterisk**:
+    *   Đảm bảo Asterisk đang chạy và ARI được bật (xem `ari.conf`, `http.conf`).
+    *   Cấu hình dialplan để đẩy cuộc gọi vào ứng dụng Stasis `ai_app` (ví dụ trong `extensions.conf`):
+        ```ini
+        ; extensions.conf
+        [ivr-ai]
+        exten => _X.,1,NoOp(Hieu-VoIP AI)
+         same => n,Set(TALK_DETECT(set)=200,1000)       ; talk>=200ms, silence>=1000ms
+         same => n,Stasis(ai_app)
+         same => n,Hangup()
+        ```
+5.  **Kiểm tra**: Thực hiện cuộc gọi đến số đã cấu hình trong dialplan và kiểm tra log của các service Docker.
+
+## 🚀 Hướng dẫn Cài đặt & Chạy
+
+1.  **Cấu hình môi trường**:
+    *   Tạo file `.env` trong thư mục gốc của dự án, dựa trên `.env.example`.
+    *   Đảm bảo các biến môi trường cho ARI (URL, username, password), Google Cloud (Project ID, Recognizer ID, credentials) và đường dẫn model LLM được cấu hình chính xác.
+    *   Đặt file model GGUF của bạn (ví dụ: `llama-4-scout-17B-16E-Instruct-unsloth-bnb-4bit.gguf`) vào thư mục `./models/nlp`.
+2.  **Build Docker Images**:
+    ```bash
+    docker compose build --no-cache app tts
+    ```
+3.  **Khởi chạy Services**:
+    ```bash
+    docker compose up -d
+    ```
+4.  **Cấu hình Asterisk**:
+    *   Đảm bảo Asterisk đang chạy và ARI được bật (xem `ari.conf`, `http.conf`).
+    *   Cấu hình dialplan để đẩy cuộc gọi vào ứng dụng Stasis `ai_app` (ví dụ trong `extensions.conf`):
+        ```ini
+        ; extensions.conf
+        [ivr-ai]
+        exten => _X.,1,NoOp(Hieu-VoIP AI)
+         same => n,Set(TALK_DETECT(set)=200,1000)       ; talk>=200ms, silence>=1000ms
+         same => n,Stasis(ai_app)
+         same => n,Hangup()
+        ```
+5.  **Kiểm tra**: Thực hiện cuộc gọi đến số đã cấu hình trong dialplan và kiểm tra log của các service Docker.
+
+## 🚀 Hướng dẫn Cài đặt & Chạy
+
+1.  **Cấu hình môi trường**:
+    *   Tạo file `.env` trong thư mục gốc của dự án, dựa trên `.env.example`.
+    *   Đảm bảo các biến môi trường cho ARI (URL, username, password), Google Cloud (Project ID, Recognizer ID, credentials) và đường dẫn model LLM được cấu hình chính xác.
+    *   Đặt file model GGUF của bạn (ví dụ: `llama-4-scout-17B-16E-Instruct-unsloth-bnb-4bit.gguf`) vào thư mục `./models/nlp`.
+2.  **Build Docker Images**:
+    ```bash
+    docker compose build --no-cache app tts
+    ```
+3.  **Khởi chạy Services**:
+    ```bash
+    docker compose up -d
+    ```
+4.  **Cấu hình Asterisk**:
+    *   Đảm bảo Asterisk đang chạy và ARI được bật (xem `ari.conf`, `http.conf`).
+    *   Cấu hình dialplan để đẩy cuộc gọi vào ứng dụng Stasis `ai_app` (ví dụ trong `extensions.conf`):
+        ```ini
+        ; extensions.conf
+        [ivr-ai]
+        exten => _X.,1,NoOp(Hieu-VoIP AI)
+         same => n,Set(TALK_DETECT(set)=200,1000)       ; talk>=200ms, silence>=1000ms
+         same => n,Stasis(ai_app)
+         same => n,Hangup()
+        ```
+5.  **Kiểm tra**: Thực hiện cuộc gọi đến số đã cấu hình trong dialplan và kiểm tra log của các service Docker.
+
+## 🚀 Hướng dẫn Cài đặt & Chạy
+
+1.  **Cấu hình môi trường**:
+    *   Tạo file `.env` trong thư mục gốc của dự án, dựa trên `.env.example`.
+    *   Đảm bảo các biến môi trường cho ARI (URL, username, password), Google Cloud (Project ID, Recognizer ID, credentials) và đường dẫn model LLM được cấu hình chính xác.
+    *   Đặt file model GGUF của bạn (ví dụ: `llama-4-scout-17B-16E-Instruct-unsloth-bnb-4bit.gguf`) vào thư mục `./models/nlp`.
+2.  **Build Docker Images**:
+    ```bash
+    docker compose build --no-cache app tts
+    ```
+3.  **Khởi chạy Services**:
+    ```bash
+    docker compose up -d
+    ```
+4.  **Cấu hình Asterisk**:
+    *   Đảm bảo Asterisk đang chạy và ARI được bật (xem `ari.conf`, `http.conf`).
+    *   Cấu hình dialplan để đẩy cuộc gọi vào ứng dụng Stasis `ai_app` (ví dụ trong `extensions.conf`):
+        ```ini
+        ; extensions.conf
+        [ivr-ai]
+        exten => _X.,1,NoOp(Hieu-VoIP AI)
+         same => n,Set(TALK_DETECT(set)=200,1000)       ; talk>=200ms, silence>=1000ms
+         same => n,Stasis(ai_app)
+         same => n,Hangup()
+        ```
+5.  **Kiểm tra**: Thực hiện cuộc gọi đến số đã cấu hình trong dialplan và kiểm tra log của các service Docker.
+
+## 🚀 Hướng dẫn Cài đặt & Chạy
+
+1.  **Cấu hình môi trường**:
+    *   Tạo file `.env` trong thư mục gốc của dự án, dựa trên `.env.example`.
+    *   Đảm bảo các biến môi trường cho ARI (URL, username, password), Google Cloud (Project ID, Recognizer ID, credentials) và đường dẫn model LLM được cấu hình chính xác.
+    *   Đặt file model GGUF của bạn (ví dụ: `llama-4-scout-17B-16E-Instruct-unsloth-bnb-4bit.gguf`) vào thư mục `./models/nlp`.
+2.  **Build Docker Images**:
+    ```bash
+    docker compose build --no-cache app tts
+    ```
+3.  **Khởi chạy Services**:
+    ```bash
+    docker compose up -d
+    ```
+4.  **Cấu hình Asterisk**:
+    *   Đảm bảo Asterisk đang chạy và ARI được bật (xem `ari.conf`, `http.conf`).
+    *   Cấu hình dialplan để đẩy cuộc gọi vào ứng dụng Stasis `ai_app` (ví dụ trong `extensions.conf`):
+        ```ini
+        ; extensions.conf
+        [ivr-ai]
+        exten => _X.,1,NoOp(Hieu-VoIP AI)
+         same => n,Set(TALK_DETECT(set)=200,1000)       ; talk>=200ms, silence>=1000ms
+         same => n,Stasis(ai_app)
+         same => n,Hangup()
+        ```
+5.  **Kiểm tra**: Thực hiện cuộc gọi đến số đã cấu hình trong dialplan và kiểm tra log của các service Docker.
+
+## 🚀 Hướng dẫn Cài đặt & Chạy
+
+1.  **Cấu hình môi trường**:
+    *   Tạo file `.env` trong thư mục gốc của dự án, dựa trên `.env.example`.
+    *   Đảm bảo các biến môi trường cho ARI (URL, username, password), Google Cloud (Project ID, Recognizer ID, credentials) và đường dẫn model LLM được cấu hình chính xác.
+    *   Đặt file model GGUF của bạn (ví dụ: `llama-4-scout-17B-16E-Instruct-unsloth-bnb-4bit.gguf`) vào thư mục `./models/nlp`.
+2.  **Build Docker Images**:
+    ```bash
+    docker compose build --no-cache app tts
+    ```
+3.  **Khởi chạy Services**:
+    ```bash
+    docker compose up -d
+    ```
+4.  **Cấu hình Asterisk**:
+    *   Đảm bảo Asterisk đang chạy và ARI được bật (xem `ari.conf`, `http.conf`).
+    *   Cấu hình dialplan để đẩy cuộc gọi vào ứng dụng Stasis `ai_app` (ví dụ trong `extensions.conf`):
+        ```ini
+        ; extensions.conf
+        [ivr-ai]
+        exten => _X.,1,NoOp(Hieu-VoIP AI)
+         same => n,Set(TALK_DETECT(set)=200,1000)       ; talk>=200ms, silence>=1000ms
+         same => n,Stasis(ai_app)
+         same => n,Hangup()
+        ```
+5.  **Kiểm tra**: Thực hiện cuộc gọi đến số đã cấu hình trong dialplan và kiểm tra log của các service Docker.
+
+## 🚀 Hướng dẫn Cài đặt & Chạy
+
+1.  **Cấu hình môi trường**:
+    *   Tạo file `.env` trong thư mục gốc của dự án, dựa trên `.env.example`.
+    *   Đảm bảo các biến môi trường cho ARI (URL, username, password), Google Cloud (Project ID, Recognizer ID, credentials) và đường dẫn model LLM được cấu hình chính xác.
+    *   Đặt file model GGUF của bạn (ví dụ: `llama-4-scout-17B-16E-Instruct-unsloth-bnb-4bit.gguf`) vào thư mục `./models/nlp`.
+2.  **Build Docker Images**:
+    ```bash
+    docker compose build --no-cache app tts
+    ```
+3.  **Khởi chạy Services**:
+    ```bash
+    docker compose up -d
+    ```
+4.  **Cấu hình Asterisk**:
+    *   Đảm bảo Asterisk đang chạy và ARI được bật (xem `ari.conf`, `http.conf`).
+    *   Cấu hình dialplan để đẩy cuộc gọi vào ứng dụng Stasis `ai_app` (ví dụ trong `extensions.conf`):
+        ```ini
+        ; extensions.conf
+        [ivr-ai]
+        exten => _X.,1,NoOp(Hieu-VoIP AI)
+         same => n,Set(TALK_DETECT(set)=200,1000)       ; talk>=200ms, silence>=1000ms
+         same => n,Stasis(ai_app)
+         same => n,Hangup()
+        ```
+5.  **Kiểm tra**: Thực hiện cuộc gọi đến số đã cấu hình trong dialplan và kiểm tra log của các service Docker.
 
 ## 📚 Tài liệu & Kế hoạch
 

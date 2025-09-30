@@ -1,0 +1,15 @@
+root ::= object
+object ::= "{" members? "}"
+members ::= pair ("," pair)*
+pair ::= string ":" value
+value ::= string | number | object | array | "true" | "false" | "null"
+string ::= "\"" chars? "\""
+chars ::= char+
+char ::= [^"\\] | escape
+escape ::= "\\" [\\/bfnrt] | "\\" "u" hex hex hex hex
+number ::= "-"? int frac? exp?
+int ::= "0" | [1-9][0-9]*
+frac ::= "." [0-9]+
+exp ::= [eE] [+\-]? [0-9]+
+array ::= "[" elements? "]"
+elements ::= value ("," value)*

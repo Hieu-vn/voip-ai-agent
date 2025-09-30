@@ -1,0 +1,9 @@
+services:
+  tei:
+    image: ghcr.io/huggingface/text-embeddings-inference:0.4
+    command: ["--model-id","BAAI/bge-m3","--pooling","cls"]
+    ports: ["8080:80"]
+  qdrant:
+    image: qdrant/qdrant:latest
+    ports: ["6333:6333","6334:6334"]
+    environment: [ "QDRANT__STORAGE__STRICT_MODE=true" ]

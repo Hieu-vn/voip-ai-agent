@@ -24,7 +24,7 @@ from opentelemetry import trace
 from opentelemetry.instrumentation.aiohttp_client import AioHttpClientInstrumentor
 
 # Import the new call handler (to be created)
-# from app.audio.stream import CallHandler
+from app.audio.stream import CallHandler
 
 # --- Configuration ---
 # Configure logging
@@ -54,30 +54,6 @@ ARI_PASSWORD = os.getenv("ARI_PASSWORD", "supersecret")
 ARI_APP_NAME = "ai_app"  # Must match the Stasis app name in extensions.conf
 
 # A placeholder for the call handler class that will be implemented in stream.py
-class CallHandler:
-    def __init__(self, ari_client, channel):
-        self.ari_client = ari_client
-        self.channel = channel
-        self.log = structlog.get_logger(call_id=self.channel.id)
-
-    async def handle_call(self):
-        self.log.info("New call received, handling...")
-        try:
-            await self.channel.answer()
-            self.log.info("Call answered.")
-            await self.channel.play(media="sound:hello-world")
-            self.log.info("Played hello-world prompt.")
-            # The real logic (externalMedia, STT, NLP, TTS) will be built here.
-            await asyncio.sleep(10) # Keep call alive for 10s for testing
-            await self.channel.hangup()
-            self.log.info("Call hung up.")
-        except Exception as e:
-            self.log.error("Error during call handling", exc_info=e)
-            try:
-                await self.channel.hangup()
-            except Exception:
-                pass # Ignore errors during hangup
-
 async def on_stasis_start(channel, event):
     """
     Callback for when a new channel enters the Stasis (our ARI) application.

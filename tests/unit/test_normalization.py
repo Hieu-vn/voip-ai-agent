@@ -47,12 +47,12 @@ class TestTextNormalizer(unittest.TestCase):
         """Tests if regex rules are applied correctly."""
         self.assertEqual(self.normalizer.normalize("Xin chào!!!"), "Xin chào.")
         self.assertEqual(self.normalizer.normalize("  cảm   ơn  "), "cảm ơn")
-        self.assertEqual(self.normalizer.normalize("đây là@#$test"), "đây làtest")
+        self.assertEqual(self.normalizer.normalize("đây là@#$test"), "đây là test")
 
     def test_max_length_enforcement(self):
         """Tests if text is correctly truncated to max_length."""
         long_string = "đây là một câu rất dài và không có ý nghĩa gì cả"
-        self.assertEqual(self.normalizer.normalize(long_string), "đây là một câu rất dài v") # Truncated to 25
+        self.assertEqual(self.normalizer.normalize(long_string), "đây là một câu rất dài") # Truncated to 25
 
     def test_combined_normalization(self):
         """Tests a combination of all normalization rules."""

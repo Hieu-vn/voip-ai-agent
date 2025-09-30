@@ -10,3 +10,8 @@ pyarrow==12.0.1
 soundfile==0.12.1
 librosa==0.10.2
 structlog==24.1.0
+
+# Observability (Tracing & Metrics)
+opentelemetry-distro==0.46b0
+opentelemetry-exporter-otlp==1.25.0
+opentelemetry-instrumentation-fastapi==0.46b0

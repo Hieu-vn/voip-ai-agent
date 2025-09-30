@@ -99,9 +99,10 @@ Phần này định nghĩa các quy tắc và tiêu chuẩn cho tất cả các 
 *   **Mục tiêu:** Khởi động thành công hệ thống hiện tại trên Docker.
 *   **Kết quả:** Đã hoàn tất thành công `docker compose build --no-cache app tts` và xác minh cả hai service `app` và `tts` đều khởi động và chạy ổn định mà không gặp lỗi runtime. Các vấn đề về dependency, build và tải model đã được giải quyết triệt để.
 
-### Giai đoạn 1: Lõi Đối thoại & Tương tác (Core Dialogue & Interaction)
+### Giai đoạn 1: Lõi Đối thoại & Tương tác (Đang triển khai)
 
 *   **Mục tiêu:** Xây dựng nền tảng cho việc hiểu sâu và quản lý hội thoại một cách có cấu trúc.
+*   **Tiến độ:** Đã triển khai các skeleton code cho các module chính (`app/main.py`, `app/nlu/agent.py`, `app/nlu/llama.py`, `app/audio/stream.py`, `app/tts/client.py`, `app/tools/crm.py`, `tts_server/api.py`) với logic ban đầu và tích hợp `structlog`.
 *   **Hạng mục:**
     1.  **Chuẩn hóa Đầu vào (Input Processing):**
         *   **Intent/Slot Schema:** Định nghĩa cấu trúc JSON chuẩn cho các tác vụ thoại (vd: `tra_cuu_don_hang`).

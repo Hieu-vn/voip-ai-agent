@@ -38,8 +38,29 @@ ENV PATH="/opt/venv/bin:$PATH" PYTHONPATH=""
 
 COPY tts_server/ ./tts_server
 
-# 3) (Tuỳ chọn) dọn toolchain để giảm size image ~200MB+
-#    COMMENT nếu bạn muốn giữ lại để sau này dễ cài thêm lib
+# 3) Pre-download/cache NeMo models to eliminate cold-start latency
+#    Using English models as placeholders per the plan.
+#    Replace with specific fine-tuned Vietnamese .nemo paths later.
+RUN python - <<'PY'
+import os
+# Set cache dir to be within the build context
+os.environ["NEMO_CACHE_DIR"] = "/opt/nemo_cache"
+os.makedirs(os.environ["NEMO_CACHE_DIR"], exist_ok=True)
+try:
+    from nemo.collections.tts.models import FastPitchModel, HifiGanModel
+    print("Pre-downloading NeMo FastPitch model...")
+    FastPitchModel.from_pretrained("tts_en_fastpitch")
+    print("Pre-downloading NeMo HiFiGAN model...")
+    HifiGanModel.from_pretrained("tts_hifigan")
+    print("NeMo models pre-downloaded successfully.")
+except Exception as e:
+    print(f"Warning: Failed to pre-download NeMo models: {e}")
+    print("This is expected if running offline or behind a restrictive firewall.")
+    print("The application might try to download them at runtime instead.")
+PY
+
+# 4) (Optional) Clean up build toolchain to reduce final image size
+#    Comment this out if you need the toolchain for later debugging.
 RUN apt-get purge -y build-essential python3.10-dev pkg-config && \
     apt-get autoremove -y && \
     rm -rf /var/lib/apt/lists/*

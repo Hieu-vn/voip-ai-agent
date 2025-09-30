@@ -17,3 +17,10 @@ python-dotenv==1.0.1
 pydub==0.25.1
 structlog==24.1.0
 uvloop==0.20.0
+
+# Asterisk REST Interface
+ari==1.0.0
+
+# Observability
+opentelemetry-distro==0.46b0
+opentelemetry-instrumentation-aiohttp-client==0.46b0

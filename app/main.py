@@ -1,57 +1,134 @@
-import asyncio, os, json, structlog
-from aiohttp import web, ClientSession
-from google.cloud import speech_v1p1beta1 as speech
-from app.nlu.agent import Agent
-from app.audio.stream import AsteriskStream
-from app.tts.client import TTSClient
+"""
+VoIP AI Agent - Main Application Entrypoint (ARI)
 
+This module is the core of the 'app' service. It connects to the Asterisk
+REST Interface (ARI) via a WebSocket, listens for incoming calls, and hands
+them off to a dedicated handler for processing.
+
+Architecture:
+- Uses `asyncio` for concurrent handling of multiple calls.
+- Uses `ari-py` library to interact with the Asterisk ARI.
+- Implements a persistent WebSocket client to receive real-time call events.
+- For each incoming call (`StasisStart` event), it spawns a `CallHandler` task.
+- Integrates `structlog` for structured, context-aware logging.
+- Sets up OpenTelemetry for distributed tracing.
+"""
+import asyncio
+import logging
+import os
+import signal
+
+import ari
+import structlog
+from opentelemetry import trace
+from opentelemetry.instrumentation.aiohttp_client import AioHttpClientInstrumentor
+
+# Import the new call handler (to be created)
+# from app.audio.stream import CallHandler
+
+# --- Configuration ---
+# Configure logging
+structlog.configure(
+    processors=[
+        structlog.contextvars.merge_contextvars,
+        structlog.processors.add_log_level,
+        structlog.processors.StackInfoRenderer(),
+        structlog.dev.set_exc_info,
+        structlog.processors.TimeStamper(fmt="iso"),
+        structlog.processors.JSONRenderer(),
+    ],
+    wrapper_class=structlog.make_filtering_bound_logger(logging.INFO),
+    context_class=dict,
+    logger_factory=structlog.PrintLoggerFactory(),
+)
 log = structlog.get_logger()
 
-async def handle_call(request: web.Request):
-    chan_id = request.query.get("channel")
-    stream = AsteriskStream(chan_id, ari_base=os.getenv("ARI_URL"))
-    tts = TTSClient(base_url="http://127.0.0.1:8001")
-    agent = await Agent.create()
-    stt_client = speech.SpeechClient()
+# Configure tracing
+AioHttpClientInstrumentor().instrument()
+tracer = trace.get_tracer(__name__)
 
-    # Bắt đầu pull RTP và đẩy STT streaming
-    async with stream.audio_reader() as pcm_iter:
-        stt_stream = stt_client.streaming_recognize(
-            requests=speech.StreamingRecognizeRequest(
-                streaming_config=speech.StreamingRecognitionConfig(
-                    config=speech.RecognitionConfig(
-                        language_code="vi-VN",
-                        encoding=speech.RecognitionConfig.AudioEncoding.LINEAR16,
-                        sample_rate_hertz=8000,
-                        enable_automatic_punctuation=True,
-                    ),
-                    interim_results=True,
-                    single_utterance=False,
-                )
-            )
-        )
+# --- ARI Connection Details ---
+ARI_URL = os.getenv("ARI_URL", "http://localhost:8088/")
+ARI_USERNAME = os.getenv("ARI_USERNAME", "ai_user")
+ARI_PASSWORD = os.getenv("ARI_PASSWORD", "supersecret")
+ARI_APP_NAME = "ai_app"  # Must match the Stasis app name in extensions.conf
 
-        async def feed_stt():
-            async for chunk in pcm_iter:
-                await stt_stream.write(speech.StreamingRecognizeRequest(audio_content=chunk))
-            await stt_stream.done_writing()
+# A placeholder for the call handler class that will be implemented in stream.py
+class CallHandler:
+    def __init__(self, ari_client, channel):
+        self.ari_client = ari_client
+        self.channel = channel
+        self.log = structlog.get_logger(call_id=self.channel.id)
 
-        async def consume_stt():
-            async for resp in stt_stream:
-                for r in resp.results:
-                    if r.is_final or r.stability > 0.8:
-                        text = r.alternatives[0].transcript.strip()
-                        if text:
-                            reply = await agent.respond(text)  # LangGraph + MCP lookup
-                            wav = await tts.synthesize(reply, spk="female_vi", rate=1.05)
-                            await stream.play_wav(wav)
+    async def handle_call(self):
+        self.log.info("New call received, handling...")
+        try:
+            await self.channel.answer()
+            self.log.info("Call answered.")
+            await self.channel.play(media="sound:hello-world")
+            self.log.info("Played hello-world prompt.")
+            # The real logic (externalMedia, STT, NLP, TTS) will be built here.
+            await asyncio.sleep(10) # Keep call alive for 10s for testing
+            await self.channel.hangup()
+            self.log.info("Call hung up.")
+        except Exception as e:
+            self.log.error("Error during call handling", exc_info=e)
+            try:
+                await self.channel.hangup()
+            except Exception:
+                pass # Ignore errors during hangup
 
-        await asyncio.gather(feed_stt(), consume_stt())
+async def on_stasis_start(channel, event):
+    """
+    Callback for when a new channel enters the Stasis (our ARI) application.
+    This is the entry point for a new call.
+    """
+    call_id = event['channel']['id']
+    structlog.contextvars.bind_contextvars(call_id=call_id)
+    log.info("StasisStart event received for new call", channel_name=event['channel']['name'])
+    
+    # Create and run a handler for this specific call
+    handler = CallHandler(channel.client, channel)
+    asyncio.create_task(handler.handle_call())
 
-    return web.Response(text="OK")
+async def main():
+    """
+    Main asynchronous function to connect to ARI and run the application.
+    """
+    shutdown_event = asyncio.Event()
 
-app = web.Application()
-app.router.add_post("/call", handle_call)
+    def signal_handler():
+        log.info("Shutdown signal received.")
+        shutdown_event.set()
+
+    loop = asyncio.get_running_loop()
+    loop.add_signal_handler(signal.SIGINT, signal_handler)
+    loop.add_signal_handler(signal.SIGTERM, signal_handler)
+
+    while not shutdown_event.is_set():
+        try:
+            log.info("Connecting to ARI...", url=ARI_URL, app=ARI_APP_NAME)
+            async with ari.connect(ARI_URL, ARI_USERNAME, ARI_PASSWORD) as client:
+                log.info("ARI connection successful. Listening for calls.")
+                
+                # Subscribe to the StasisStart event for our app
+                client.on_channel_event("StasisStart", on_stasis_start)
+                
+                # Keep the connection alive until a shutdown signal is received
+                await shutdown_event.wait()
+                log.info("Disconnecting from ARI.")
+                
+        except asyncio.CancelledError:
+            log.info("Main task cancelled.")
+            break
+        except Exception as e:
+            log.error("ARI connection failed. Retrying in 5 seconds...", exc_info=e)
+            if not shutdown_event.is_set():
+                await asyncio.sleep(5)
 
 if __name__ == "__main__":
-    web.run_app(app, host="0.0.0.0", port=8000)
+    log.info("Starting VoIP AI Agent - App Service")
+    try:
+        asyncio.run(main())
+    except KeyboardInterrupt:
+        log.info("Application stopped by user.")

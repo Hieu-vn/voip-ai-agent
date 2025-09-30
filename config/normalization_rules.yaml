@@ -1,0 +1,23 @@
+# Normalization rules for Vietnamese text
+# Used by TextNormalizer to standardize STT output before NLP/TTS.
+
+replacements:
+  # Units of measurement
+  - kg: "ki lô gam"
+  - km: "ki lô mét"
+  - m: "mét"
+  - cm: "xen ti mét"
+  - h: "giờ"
+  - p: "phút"
+  - s: "giây"
+
+  # Common technical acronyms that might be transcribed literally
+  # The replacement is how we want the AI to pronounce it.
+  - api: "ây pi ai"
+  - tts: "ti ti ét"
+  - stt: "ét ti ti"
+  - nlp: "en el pi"
+
+# More complex rules like number conversion (e.g., "123" -> "một trăm hai mươi ba")
+# will be handled directly in the Python code for now, but could be configured here
+# in the future if more advanced logic is needed.

@@ -1,10 +1,7 @@
-import asyncio
+import os
 import logging
-from typing import AsyncIterator, Dict, Optional
-
+import asyncio # Import asyncio for Queue
 from google.cloud import speech_v1p1beta1 as speech
-
-logger = logging.getLogger(__name__)
 
 class STTGoogleCloudClient:
     def __init__(self, language_code: str, sample_rate_hz: int):
@@ -12,97 +9,69 @@ class STTGoogleCloudClient:
         self.sample_rate_hz = sample_rate_hz
         self.client = speech.SpeechClient()
 
-    async def streaming_recognize_generator(
-        self,
-        audio_queue: asyncio.Queue,
-        call_id: str,
-        adaptation_config: Optional[Dict],
-        timeout: int = 120,
-    ) -> AsyncIterator[Dict]:
+    async def streaming_recognize_generator(self, audio_queue: asyncio.Queue, call_id: str, adaptation_config: dict, timeout: int = 120):
         """
-        Consume PCM audio chunks from an asyncio queue and stream them to Google STT.
-        Yields dictionaries containing transcripts and flags from the API responses.
+        Recognizes speech from an asyncio.Queue and yields results.
+        
+        :param audio_queue: An asyncio.Queue containing audio chunks (bytes).
+        :param call_id: ID of the call for logging.
+        :param adaptation_config: Dictionary containing speech adaptation configuration.
+        :param timeout: Maximum timeout for the API call.
+        :yield: A dictionary containing transcript and is_final flag.
         """
-        logger.debug("STT Client [%s]: sample rate %sHz", call_id, self.sample_rate_hz)
+        chunk_interval_ms = 100
+        # chunk_size = int(self.sample_rate_hz * 2 * (chunk_interval_ms / 1000)) # Not needed if reading from queue
+        logging.debug(f"STT Client [{call_id}]: Sample rate {self.sample_rate_hz}Hz.")
 
-        streaming_config = self._build_streaming_config(adaptation_config or {})
-        result_queue: asyncio.Queue = asyncio.Queue()
-        loop = asyncio.get_running_loop()
-
-        def request_iterator():
-            while True:
-                future = asyncio.run_coroutine_threadsafe(audio_queue.get(), loop)
-                chunk = future.result()
-                if chunk is None:
-                    logger.debug("STT Client [%s]: received audio stream sentinel", call_id)
-                    break
-                yield speech.StreamingRecognizeRequest(audio_content=chunk)
-
-        def run_recognition():
-            try:
-                responses = self.client.streaming_recognize(
-                    streaming_config,
-                    request_iterator(),
-                    timeout=timeout,
-                )
-                for response in responses:
-                    if not response.results:
-                        continue
-                    result = response.results[0]
-                    if not result.alternatives:
-                        continue
-                    transcript = result.alternatives[0].transcript
-                    payload = {
-                        "transcript": transcript,
-                        "is_final": result.is_final,
-                    }
-                    asyncio.run_coroutine_threadsafe(result_queue.put(payload), loop)
-            except Exception as exc:
-                logger.error(
-                    "STT Client [%s]: error during streaming recognition: %s",
-                    call_id,
-                    exc,
-                    exc_info=True,
-                )
-                error_payload = {"transcript": "", "is_final": True, "error": str(exc)}
-                asyncio.run_coroutine_threadsafe(result_queue.put(error_payload), loop)
-            finally:
-                asyncio.run_coroutine_threadsafe(result_queue.put(None), loop)
-
-        recognition_future = loop.run_in_executor(None, run_recognition)
-
-        try:
-            while True:
-                item = await result_queue.get()
-                if item is None:
-                    break
-                yield item
-        finally:
-            await asyncio.wrap_future(recognition_future)
-
-    def _build_streaming_config(self, adaptation_config: Dict) -> speech.StreamingRecognitionConfig:
-        phrase_hints = adaptation_config.get("phrase_hints") or []
-        boost = adaptation_config.get("boost", 1.0)
-        enable_punctuation = adaptation_config.get("enable_automatic_punctuation", True)
-
+        # --- Step 1: Build Speech Adaptation object from config ---
         speech_adaptation = None
-        if phrase_hints:
+        if adaptation_config and adaptation_config.get('phrase_hints'):
             phrase_set = speech.PhraseSet(
-                phrases=[speech.PhraseSet.Phrase(value=p, boost=boost) for p in phrase_hints]
+                phrases=[
+                    speech.PhraseSet.Phrase(value=p, boost=adaptation_config.get('boost', 1.0))
+                    for p in adaptation_config['phrase_hints']
+                ]
             )
             speech_adaptation = speech.SpeechAdaptation(phrase_sets=[phrase_set])
-            logger.info(
-                "STT Client: applying speech adaptation with %s hints", len(phrase_hints)
-            )
+            logging.info(f"STT Client [{call_id}]: Applying Speech Adaptation with {len(adaptation_config['phrase_hints'])} hints.")
+
+        # --- Step 2: Build final Recognition Config ---
+        enable_punctuation = adaptation_config.get('enable_automatic_punctuation', True)
 
         config = speech.RecognitionConfig(
             encoding=speech.RecognitionConfig.AudioEncoding.LINEAR16,
             sample_rate_hertz=self.sample_rate_hz,
             language_code=self.language_code,
             enable_automatic_punctuation=enable_punctuation,
-            adaptation=speech_adaptation,
+            adaptation=speech_adaptation  # Attach adaptation to config
         )
-        return speech.StreamingRecognitionConfig(
+        streaming_config = speech.StreamingRecognitionConfig(
             config=config,
-            interim_results=True,
+            interim_results=True
         )
+
+        async def requests_gen():
+            # This generator should yield audio content from the queue.
+            while True:
+                chunk = await audio_queue.get()
+                if chunk is None: # Signal for end of stream
+                    logging.debug(f"STT Client [{call_id}]: Received end of audio stream signal.")
+                    break
+                yield speech.StreamingRecognizeRequest(audio_content=chunk)
+            logging.debug(f"STT Client [{call_id}]: Finished yielding audio stream.")
+
+        responses = self.client.streaming_recognize(config=streaming_config, requests=requests_gen(), timeout=timeout)
+        
+        # --- Step 3: Process and yield results ---
+        try:
+            logging.info(f"STT Client [{call_id}]: Starting to receive stream results from Google API.")
+            async for response in responses: # Use async for to iterate over async generator
+                if not response.results or not response.results[0].alternatives: continue
+                result = response.results[0]
+                transcript = result.alternatives[0].transcript
+                logging.debug(f"STT Client [{call_id}]: Transcript (final={result.is_final}): '{transcript}'")
+                yield { "transcript": transcript, "is_final": result.is_final }
+                if result.is_final and streaming_config.single_utterance: break
+        except Exception as e:
+            logging.error(f"STT Client [{call_id}]: Lỗi khi xử lý stream từ Google API: {e}", exc_info=True)
+            yield { "transcript": "", "is_final": True, "error": str(e) }

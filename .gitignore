@@ -37,6 +37,7 @@ htmlcov/
 # Hugging Face
 # Cache directories for models, datasets, etc.
 # These can be very large and should not be committed.
+cache/
 .cache/huggingface/
 hf_cache/
 transformers_cache/
@@ -70,3 +71,11 @@ test.txt
 
 # Ignore media files
 *.mp3
+
+# Environment file
+.env
+
+# Data and reports
+data/raw/
+data/processed/
+diagnostics_reports/

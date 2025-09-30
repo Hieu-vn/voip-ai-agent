@@ -1,0 +1,20 @@
+# ===========================================================
+# Configuration for Data Preparation Scripts (prepare_audio_parquet.py)
+# ===========================================================
+
+# Audio processing parameters
+audio:
+  target_sr: 22050      # Target sample rate for all clips (Hz)
+  target_lufs: -23.0    # Target loudness in LUFS (EBU R128 standard)
+  peak_dbfs: -2.0       # Max true peak in dBFS to prevent clipping after normalization
+
+# Voice Activity Detection (VAD) and trimming parameters
+vad:
+  top_db: 60            # The threshold (in dB) below reference to consider as silence for trimming
+  pad_sec: 0.15         # Seconds of silence to pad at the beginning and end of the trimmed audio
+
+# Filtering and batching parameters
+filtering:
+  min_dur: 1.5          # Minimum duration of an audio clip in seconds
+  max_dur: 22.0         # Maximum duration of an audio clip in seconds (increased from 20.0 to include more data)
+  flush_every_csv: 50000 # How many rows to buffer in memory before writing to the CSV file

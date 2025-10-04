@@ -1,26 +1,30 @@
-﻿import socket
-import struct
-import random
-import structlog
 import asyncio
 import os
+import random
+import socket
+import struct
 from typing import Optional
 
-from app.tts.client import TTSClient
-from app.stt.client import SttClient
-from app.nlu.agent import Agent as NluAgent # Rename for clarity
+import structlog
+
 from app.dialog.state import DialogState
-from app.utils.text_normalizer import TextNormalizer
 from app.evaluation.tracker import evaluation_tracker
+from app.nlu.agent import Agent as NluAgent
+from app.stt.client import SttClient
+from app.tts.client import TTSClient
+from app.utils.text_normalizer import TextNormalizer
+
 
 log = structlog.get_logger()
 
+
 # --- RTP Server for bi-directional audio ---
+
 
 class RtpServerProtocol(asyncio.DatagramProtocol):
     """A Datagram Protocol to handle RTP traffic with Asterisk."""
 
-    def __init__(self, call_handler: 'CallHandler'):
+    def __init__(self, call_handler: "CallHandler"):
         self.call_handler = call_handler
         self.transport: Optional[asyncio.DatagramTransport] = None
         self.remote_addr = None
@@ -61,7 +65,7 @@ class RtpServerProtocol(asyncio.DatagramProtocol):
         header = struct.pack(
             "!BBHII",
             0x80,  # V=2, P=0, X=0, CC=0
-            96,    # M=0, PT=96 (dynamic payload type)
+            96,  # M=0, PT=96 (dynamic payload type)
             self.sequence_number & 0xFFFF,
             self.timestamp & 0xFFFFFFFF,
             self.ssrc,
@@ -71,8 +75,8 @@ class RtpServerProtocol(asyncio.DatagramProtocol):
         self.timestamp = (self.timestamp + samples) & 0xFFFFFFFF
         try:
             self.transport.sendto(packet, self.remote_addr)
-        except Exception as e:
-            self.call_handler.log.error("Failed to send RTP packet", exc_info=e)
+        except Exception as exc:
+            self.call_handler.log.error("Failed to send RTP packet", exc_info=exc)
 
     def close(self):
         """Closes the UDP transport."""
@@ -80,12 +84,22 @@ class RtpServerProtocol(asyncio.DatagramProtocol):
             self.transport.close()
             self.call_handler.log.info("RTP server transport closed.")
 
+
 # --- Main Call Handler Class ---
+
 
 class CallHandler:
     """Orchestrates a single call from start to finish."""
 
-    def __init__(self, ari_client, channel):
+    def __init__(
+        self,
+        ari_client,
+        channel,
+        *,
+        tts_client: Optional[TTSClient] = None,
+        stt_client: Optional[SttClient] = None,
+        normalizer: Optional[TextNormalizer] = None,
+    ):
         self.ari_client = ari_client
         self.channel = channel
         self.log = structlog.get_logger(call_id=self.channel.id)
@@ -95,11 +109,23 @@ class CallHandler:
         self.nlu_agent: Optional[NluAgent] = None
         self.dialog_state: Optional[DialogState] = None
         self.turn_index = 0
+        self._current_tts_task: Optional[asyncio.Task] = None
 
         # Instantiate service clients and utilities
-        self.tts_client = TTSClient()
-        self.stt_client = SttClient(self.on_stt_result)
-        self.normalizer = TextNormalizer()
+        self.tts_client = tts_client or TTSClient()
+        if stt_client is None:
+            self.stt_client = SttClient(self.on_stt_result, self.on_stt_voice_event)
+        else:
+            self.stt_client = stt_client
+            if hasattr(self.stt_client, "set_result_callback"):
+                self.stt_client.set_result_callback(self.on_stt_result)
+            else:
+                setattr(self.stt_client, "on_result", self.on_stt_result)
+            if hasattr(self.stt_client, "set_voice_event_callback"):
+                self.stt_client.set_voice_event_callback(self.on_stt_voice_event)
+            else:
+                setattr(self.stt_client, "on_voice_event", self.on_stt_voice_event)
+        self.normalizer = normalizer or TextNormalizer()
 
     async def _setup_rtp_server(self) -> tuple[str, int]:
         """Creates a UDP server to receive RTP and returns its host and port."""
@@ -107,17 +133,17 @@ class CallHandler:
         # Create a datagram endpoint, binding to an available port on all interfaces
         transport, protocol = await loop.create_datagram_endpoint(
             lambda: RtpServerProtocol(self),
-            local_addr=('0.0.0.0', 0) # 0 means OS picks a free port
+            local_addr=("0.0.0.0", 0),  # 0 means OS picks a free port
         )
         self.rtp_server = protocol
 
         # Get the actual host and port we are bound to
-        sock: socket.socket = transport.get_extra_info('socket')
+        sock: socket.socket = transport.get_extra_info("socket")
         host, port = sock.getsockname()
-        
+
         # Use the host's actual IP if possible, not 0.0.0.0, for the ARI command
         app_host = os.getenv("APP_HOST_IP", socket.gethostbyname(socket.gethostname()))
-        self.log.info(f"RTP server listening on {app_host}:{port}")
+        self.log.info("RTP server listening", host=app_host, port=port)
         return app_host, port
 
     async def handle_call(self):
@@ -132,7 +158,7 @@ class CallHandler:
             self.log.info("Call answered.")
 
             rtp_host, rtp_port = await self._setup_rtp_server()
-            
+
             self.external_media_channel = await self.ari_client.channels.externalMedia(
                 channelId=self.channel.id,
                 app=os.getenv("ARI_APP_NAME", "ai_app"),
@@ -145,17 +171,19 @@ class CallHandler:
             # 3. Start the STT client
             await self.stt_client.start()
 
-            await asyncio.sleep(0.5) # Wait for media to be active
+            await asyncio.sleep(0.5)  # Wait for media to be active
 
             # 4. Welcome message
-            await self.play_tts_audio("Xin chÃ o, tÃ´i lÃ  trá»£ lÃ½ áº£o, tÃ´i cÃ³ thá»ƒ giÃºp gÃ¬ cho báº¡n?")
+            await self.play_tts_audio(
+                "Xin chào, tôi là trợ lý ảo, tôi có thể giúp gì cho bạn?"
+            )
 
             # 5. Main loop - logic is now event-driven via callbacks
             while self.is_active:
                 await asyncio.sleep(1)
 
-        except Exception as e:
-            self.log.error("An error occurred in the call handler", exc_info=e)
+        except Exception as exc:
+            self.log.error("An error occurred in the call handler", exc_info=exc)
         finally:
             self.log.info("Call handler is shutting down.")
             await self.cleanup()
@@ -167,12 +195,20 @@ class CallHandler:
 
     async def on_stt_result(self, transcript: str, is_final: bool):
         """Callback executed by the STT client with a transcription result."""
-        self.log.debug(f"STT Result ({'final' if is_final else 'interim'}): {transcript}")
-        
+        self.log.debug(
+            "STT result received",
+            transcript=transcript,
+            is_final=is_final,
+        )
+
         if is_final and transcript and self.nlu_agent:
             # 1. Normalize the final transcript
             normalized_transcript = self.normalizer.normalize(transcript)
-            self.log.info("STT Finalized", original=transcript, normalized=normalized_transcript)
+            self.log.info(
+                "STT Finalized",
+                original=transcript,
+                normalized=normalized_transcript,
+            )
 
             # 2. Pass normalized text to the NLU agent
             try:
@@ -187,7 +223,9 @@ class CallHandler:
 
             agent_reply_text = self.dialog_state.last_bot_text or ""
             state_payload = self.dialog_state.model_dump()
-            self.log.info("NLU Agent responded", response=agent_reply_text, state=state_payload)
+            self.log.info(
+                "NLU Agent responded", response=agent_reply_text, state=state_payload
+            )
 
             # 3. Log the turn for evaluation
             evaluation_tracker.log_turn(
@@ -202,53 +240,75 @@ class CallHandler:
             # 4. Play the agent's response back to the user
             if agent_reply_text:
                 await self.play_tts_audio(agent_reply_text)
+
     async def play_tts_audio(self, text: str):
         """Synthesizes text using the TTS client and streams it to Asterisk via RTP."""
         if not self.rtp_server:
             self.log.error("Cannot play TTS audio, RTP server is not initialized.")
             return
 
-        self.log.info("Playing TTS for text", text=text)
-        try:
+        await self.stop_tts_playback()
+
+        async def _stream_tts() -> None:
+            self.log.info("Playing TTS for text", text=text)
             async for audio_chunk in self.tts_client.synthesize_stream(text):
-                if self.is_active:
-                    self.rtp_server.send_audio(audio_chunk)
-                else:
+                if not self.is_active:
                     self.log.info("Call ended, stopping TTS playback.")
                     break
-        except Exception as e:
-            self.log.error("Failed during TTS playback", exc_info=e)
+                self.rtp_server.send_audio(audio_chunk)
+
+        self._current_tts_task = asyncio.create_task(_stream_tts())
+        try:
+            await self._current_tts_task
+        except asyncio.CancelledError:
+            self.log.info("TTS playback cancelled.")
+        except Exception as exc:  # pragma: no cover - defensive logging
+            self.log.error("Failed during TTS playback", exc_info=exc)
+        finally:
+            self._current_tts_task = None
+
+    async def stop_tts_playback(self) -> None:
+        """Stops any in-flight TTS playback task."""
+        if self._current_tts_task and not self._current_tts_task.done():
+            self.log.info("Stopping current TTS playback.")
+            self._current_tts_task.cancel()
+            try:
+                await self._current_tts_task
+            except asyncio.CancelledError:
+                pass
+        self._current_tts_task = None
+
+    async def on_stt_voice_event(self, event_name: str) -> None:
+        """Handle voice activity events (e.g., barge-in)."""
+        if event_name == "SPEECH_ACTIVITY_BEGIN":
+            await self.stop_tts_playback()
 
     async def cleanup(self):
         """Gracefully cleans up all resources associated with the call."""
         if not self.is_active:
-            return # Cleanup already in progress or done
+            return  # Cleanup already in progress or done
         self.is_active = False
         self.log.info("Initiating cleanup...")
 
         # Stop all service clients
-        cleanup_tasks = [self.tts_client.close(), self.stt_client.stop()]
+        cleanup_tasks = [
+            self.stop_tts_playback(),
+            self.tts_client.close(),
+            self.stt_client.stop(),
+        ]
         await asyncio.gather(*cleanup_tasks, return_exceptions=True)
 
         if self.rtp_server:
             self.rtp_server.close()
-        
+
         # Hangup channels
         hangup_tasks = []
         if self.external_media_channel:
-            try:
-                if self.external_media_channel.id in self.ari_client.channels:
-                    hangup_tasks.append(self.external_media_channel.hangup())
-            except Exception as e:
-                self.log.warning("Could not schedule hangup for external media channel", exc_info=e)
+            hangup_tasks.append(self.external_media_channel.hangup())
 
-        if self.channel.id in self.ari_client.channels:
-            hangup_tasks.append(self.channel.hangup())
-        
+        hangup_tasks.append(self.channel.hangup())
+
         if hangup_tasks:
             await asyncio.gather(*hangup_tasks, return_exceptions=True)
-        
+
         self.log.info("Cleanup complete.")
-
-
-

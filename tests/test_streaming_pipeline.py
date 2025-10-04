@@ -1,65 +1,115 @@
-﻿import asyncio
-import time
+import asyncio
 from types import SimpleNamespace
 
 import pytest
 
-from src.core.call_handler import CallHandler
+from app.audio.stream import CallHandler
 
 
-class DummyNLP:
-    def __init__(self, chunks, metadata):
-        self._chunks = chunks
-        self._metadata = metadata
+class FakeRtpServer:
+    def __init__(self):
+        self.sent = []
 
-    async def streaming_process_user_input(self, user_text, history=None):
-        for chunk in self._chunks:
+    def send_audio(self, chunk: bytes):
+        self.sent.append(chunk)
+
+    def close(self):
+        pass
+
+
+class FakeTTSClient:
+    def __init__(self, started_event: asyncio.Event | None = None):
+        self.requested_texts = []
+        self._started_event = started_event
+
+    async def synthesize_stream(self, text: str):
+        self.requested_texts.append(text)
+        if self._started_event and not self._started_event.is_set():
+            self._started_event.set()
+        # Yield a few chunks to simulate streaming audio
+        for chunk in (b"chunk-1", b"chunk-2", b"chunk-3"):
             await asyncio.sleep(0)
             yield chunk
 
-    def pop_last_stream_result(self):
-        return dict(self._metadata)
-
-    def analyze_emotion(self, text: str) -> str:
-        return self._metadata.get("emotion", "neutral")
+    async def close(self):
+        pass
 
 
-@pytest.mark.asyncio
-async def test_streaming_response_flushes_on_punctuation(monkeypatch):
-    chunks = ["Xin ", "chao", " ban.", " Rat", " vui duoc", " ho tro."]
-    metadata = {"response_text": "", "intent": "continue_conversation", "emotion": "neutral"}
-    handler = CallHandler(SimpleNamespace(), SimpleNamespace(), DummyNLP(chunks, metadata))
-    handler.stream_chunk_min_chars = 4
-    handler.stream_chunk_max_chars = 80
-    handler.stream_flush_punct = ".!?"
+class FakeSttClient:
+    def __init__(self):
+        self._result_callback = None
+        self._voice_callback = None
 
-    played = []
+    def set_result_callback(self, callback):
+        self._result_callback = callback
 
-    async def fake_play(channel_id, text, owner_id=None):
-        played.append(text)
+    def set_voice_event_callback(self, callback):
+        self._voice_callback = callback
 
-    handler._play_tts_response = fake_play  # type: ignore
+    async def start(self):
+        pass
 
-    result = await handler._stream_nlp_response(
-        "call-1",
-        "channel-1",
-        "xin chao",
-        [],
-        time.monotonic(),
+    async def stop(self):
+        pass
+
+    def write(self, _: bytes):
+        pass
+
+
+def _fake_channel():
+    return SimpleNamespace(id="call-1", client=None)
+
+
+def _fake_ari_client():
+    # Minimal structure to satisfy cleanup logic
+    return SimpleNamespace(channels={})
+
+
+def test_call_handler_stops_tts_when_voice_activity_detected():
+    asyncio.run(_run_call_handler_stops_tts())
+
+
+async def _run_call_handler_stops_tts():
+    rtp_server = FakeRtpServer()
+    started_event = asyncio.Event()
+    tts_client = FakeTTSClient(started_event)
+    stt_client = FakeSttClient()
+
+    handler = CallHandler(
+        _fake_ari_client(),
+        _fake_channel(),
+        tts_client=tts_client,
+        stt_client=stt_client,
     )
+    handler.rtp_server = rtp_server
 
-    assert played == ["Xin chao ban.", "Rat vui duoc ho tro."]
-    assert result["response_text"] == "Xin chao ban. Rat vui duoc ho tro."
-    assert result["intent"] == "continue_conversation"
+    playback_task = asyncio.create_task(handler.play_tts_audio("xin chao"))
+    await started_event.wait()
+    await asyncio.sleep(0)
+
+    await handler.on_stt_voice_event("SPEECH_ACTIVITY_BEGIN")
+    await asyncio.sleep(0)
+
+    await handler.stop_tts_playback()
+    await playback_task
+
+    assert tts_client.requested_texts == ["xin chao"]
+    assert handler._current_tts_task is None
+    assert rtp_server.sent  # audio was streamed before cancellation
 
 
-def test_should_flush_stream_chunk_rules():
-    handler = CallHandler(SimpleNamespace(), SimpleNamespace(), DummyNLP([], {"emotion": "neutral"}))
-    handler.stream_chunk_min_chars = 5
-    handler.stream_chunk_max_chars = 10
-    handler.stream_flush_punct = ".!?"
+def test_stop_tts_playback_is_idempotent():
+    asyncio.run(_run_stop_tts_idempotent())
 
-    assert not handler._should_flush_stream_chunk("hi")
-    assert handler._should_flush_stream_chunk("hello world")
-    assert handler._should_flush_stream_chunk("bye.")
-    assert handler._should_flush_stream_chunk("ok", is_final=True)
+
+async def _run_stop_tts_idempotent():
+    handler = CallHandler(
+        _fake_ari_client(),
+        _fake_channel(),
+        tts_client=FakeTTSClient(),
+        stt_client=FakeSttClient(),
+    )
+    handler.rtp_server = FakeRtpServer()
+
+    await handler.stop_tts_playback()  # No-op when nothing is playing
+    assert handler._current_tts_task is None

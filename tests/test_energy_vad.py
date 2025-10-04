@@ -1,33 +1,23 @@
-import struct
-
-import pytest
-
-from src.core.call_handler import EnergyVAD
+from app.utils.guardrails import is_content_safe, redact_pii, unredact_pii
 
 
-def make_chunk(amplitude: int, length: int = 160) -> bytes:
-    return b"".join(struct.pack("<h", amplitude) for _ in range(length))
+def test_guardrails_redact_and_restore_pii():
+    original = "Liên hệ tôi qua số 0901234567 hoặc email test@example.com"
+    redacted, mapping = redact_pii(original)
+
+    assert "0901234567" not in redacted
+    assert "test@example.com" not in redacted
+
+    restored = unredact_pii(redacted, mapping)
+    assert restored == original
 
 
-def test_energy_vad_triggers_on_loud_audio():
-    vad = EnergyVAD(energy_threshold=500, activation_frames=2, release_frames=3)
-    silence = make_chunk(10)
-    loud = make_chunk(2000)
+def test_guardrails_detects_prohibited_keywords():
+    safe, violations = is_content_safe("Chúc bạn một ngày tốt lành")
+    assert safe
+    assert not violations
 
-    assert not vad.add_chunk(silence)
-    assert not vad.add_chunk(silence)
-
-    assert not vad.add_chunk(loud)
-    assert vad.add_chunk(loud)
-
-
-def test_energy_vad_resets_after_silence():
-    vad = EnergyVAD(energy_threshold=500, activation_frames=1, release_frames=2)
-    loud = make_chunk(1500)
-    silence = make_chunk(0)
-
-    assert vad.add_chunk(loud)
-    assert not vad.add_chunk(silence)
-    assert not vad.add_chunk(silence)
-    assert not vad.add_chunk(silence)
-    assert vad.add_chunk(loud)
+    unsafe_text = "Hướng dẫn chế tạo bom và tấn công người khác"
+    safe, violations = is_content_safe(unsafe_text)
+    assert not safe
+    assert any("bom" in v or "tấn công" in v for v in violations)

@@ -1,39 +1,79 @@
 import asyncio
+from types import SimpleNamespace
 
-from src.core.stt_module import STTModule
+import pytest
+
+from app.stt.client import SttClient
+from google.cloud import speech_v2
 
 
-def test_stt_partial_callback_invoked(monkeypatch):
-    events = []
+class _FakeResponse:
+    def __init__(self, *, results=None, event=None):
+        self.results = results or []
+        self.speech_event_type = event or speech_v2.StreamingRecognizeResponse.SpeechEventType.SPEECH_EVENT_TYPE_UNSPECIFIED
 
-    class FakeClient:
-        def __init__(self, language_code: str, sample_rate_hz: int):
-            pass
 
-        async def streaming_recognize_generator(self, audio_queue, call_id, adaptation_config, timeout=120):
-            yield {"transcript": "xin chao", "is_final": False}
-            yield {"transcript": "xin chao", "is_final": True}
+class _FakeStream:
+    def __init__(self, responses):
+        self._responses = responses
 
-    monkeypatch.setattr("src.core.stt_module.STTGoogleCloudClient", FakeClient)
+    def __aiter__(self):
+        return self
 
-    async def scenario():
-        stt = STTModule(language_code="vi-VN")
-        await stt.start_session("call-1")
+    async def __anext__(self):
+        if not self._responses:
+            raise StopAsyncIteration
+        return self._responses.pop(0)
 
-        partial_event = asyncio.Event()
 
-        async def partial_cb(transcript: str):
-            events.append(transcript)
-            partial_event.set()
+class _FakeSpeechClient:
+    def __init__(self, responses):
+        self._responses = responses
 
-        stt.register_partial_callback("call-1", partial_cb)
+    async def streaming_recognize(self, requests):
+        self._requests = requests
+        return _FakeStream(self._responses)
 
-        await partial_event.wait()
-        final_text = await stt.get_next_utterance("call-1")
-        await stt.stop_session("call-1")
-        return final_text
 
-    final_transcript = asyncio.run(scenario())
+def test_stt_client_triggers_callbacks(monkeypatch):
+    asyncio.run(_run_stt_client_triggers_callbacks(monkeypatch))
 
-    assert events and events[0] == "xin chao"
-    assert final_transcript == "xin chao"
+
+async def _run_stt_client_triggers_callbacks(monkeypatch):
+    transcripts = []
+    voice_events = []
+    result_event = asyncio.Event()
+
+    async def on_result(text: str, is_final: bool):
+        transcripts.append((text, is_final))
+        if is_final:
+            result_event.set()
+
+    async def on_voice_event(event_name: str):
+        voice_events.append(event_name)
+
+    response_list = [
+        _FakeResponse(event=speech_v2.StreamingRecognizeResponse.SpeechEventType.SPEECH_ACTIVITY_BEGIN),
+        _FakeResponse(
+            results=[
+                SimpleNamespace(
+                    alternatives=[SimpleNamespace(transcript="xin chao")],
+                    is_final=True,
+                )
+            ]
+        ),
+    ]
+
+    fake_client = _FakeSpeechClient(response_list)
+    monkeypatch.setattr(speech_v2, "SpeechAsyncClient", lambda: fake_client)
+    monkeypatch.setenv("GOOGLE_PROJECT_ID", "proj")
+    monkeypatch.setenv("GOOGLE_RECOGNIZER_ID", "rec")
+
+    stt_client = SttClient(on_result, on_voice_event)
+
+    await stt_client.start()
+    await result_event.wait()
+    await stt_client.stop()
+
+    assert ("xin chao", True) in transcripts
+    assert "SPEECH_ACTIVITY_BEGIN" in voice_events

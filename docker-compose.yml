@@ -18,13 +18,6 @@ services:
               capabilities: [gpu]
     environment:
       - NVIDIA_VISIBLE_DEVICES=0,1,2,3,4,5
-      - LLAMA_BACKEND=llama_cpp
-      - LLAMA_MODEL_PATH=/models/nlp/Q4_K_M/Llama-4-Scout-17B-16E-Instruct-Q4_K_M-00001-of-00002.gguf
-      - LLAMA_N_GPU_LAYERS=-1
-      - LLAMA_TENSOR_SPLIT=[0.2,0.2,0.2,0.15,0.15,0.1]
-      - ARI_URL=https://asterisk:8089/ari
-      - ARI_USERNAME=ai_user
-      - ARI_PASSWORD=supersecret
     command: ["opentelemetry-instrument", "python", "-m", "app.main"]
     healthcheck:
       test: ["CMD", "python", "-m", "tools.healthcheck_app"]
@@ -39,6 +32,9 @@ services:
       dockerfile: Dockerfile.tts
     env_file: .env
     volumes:
+      - ./config:/config:ro
+      - ./scripts:/scripts:ro
+      - ./data:/data:ro
       - ./cache:/root/.cache/huggingface
       - ./models/tts:/models/tts:ro
       # The nemo cache from the build stage can be mounted here if needed,
@@ -54,11 +50,8 @@ services:
               capabilities: [gpu]
     environment:
       - NVIDIA_VISIBLE_DEVICES=6,7
-      - SPEC_MODEL_PATH=/models/tts/vi_fastpitch.nemo
-      - VOCODER_MODEL_PATH=
-      # TTS models are now pre-loaded into the Docker image via Dockerfile.tts
-      # to minimize cold-start time. The TTS server will load them from the cache.
-    command: ["opentelemetry-instrument", "python", "-m", "uvicorn", "tts_server.api:app", "--host", "0.0.0.0", "--port", "8001"]
+      - NEMO_CACHE_DIR=/opt/nemo_cache
+    command: ["opentelemetry-instrument", "python", "-m", "uvicorn", "tts_server.api:app", "--host", "0.0.0.0", "--port", "5002"]
     healthcheck:
       test: ["CMD", "python", "-m", "tts_server.healthcheck"]
       interval: 15s

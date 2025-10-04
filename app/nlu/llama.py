@@ -7,8 +7,8 @@ from llama_cpp import Llama, LlamaGrammar
 
 log = structlog.get_logger()
 
-# Load GBNF grammar for structured JSON output
-GRAMMAR = LlamaGrammar.from_file("grammars/intent_json.gbnf")
+# Load GBNF grammar lazily to avoid import-time side effects
+_GRAMMAR = None
 
 _llm = None
 def _get():
@@ -45,6 +45,7 @@ def parse_json(text: str) -> dict:
 
 async def llama_infer(text: str, emotion: str = "neutral", rag_context: Optional[List[Dict[str, Any]]] = None) -> tuple[str, dict, str, str]:
     llm = _get()
+    grammar = _get_grammar()
     
     context_str = ""
     if rag_context:
@@ -52,12 +53,22 @@ async def llama_infer(text: str, emotion: str = "neutral", rag_context: Optional
         for item in rag_context:
             context_str += f"- {item.get('text', '')}\n"
 
-    prompt = f"""Bối cảnh: Người dùng đang có cảm xúc {emotion}.{context_str}\nDựa vào đó, hãy phân tích câu sau đây để xác định ý định (intent), các thông tin quan trọng (slots), và đưa ra câu trả lời phù hợp.
-
-Câu nói: "{text}""""
+    prompt = (
+        f"Bối cảnh: Người dùng đang có cảm xúc {emotion}.{context_str}\n"
+        "Dựa vào đó, hãy phân tích câu sau đây để xác định ý định (intent), các thông tin quan trọng (slots), và đưa ra câu trả lời phù hợp.\n\n"
+        f"Câu nói: \"{text}\""
+    )
     log.info("Sending prompt to Llama", prompt=prompt)
-    out = llm.create_completion(prompt, max_tokens=128, temperature=0.3, grammar=GRAMMAR)
+    out = llm.create_completion(prompt, max_tokens=128, temperature=0.3, grammar=grammar)
     llm_response = out["choices"][0]["text"]
     log.info("Llama response received", response=llm_response)
     parsed_output = parse_json(llm_response)
     return parsed_output.get("intent", "UNKNOWN"), parsed_output.get("slots", {}), emotion, llm_response
+
+
+def _get_grammar():
+    global _GRAMMAR
+    if _GRAMMAR is None:
+        log.info("Loading Llama grammar", path="grammars/intent_json.gbnf")
+        _GRAMMAR = LlamaGrammar.from_file("grammars/intent_json.gbnf")
+    return _GRAMMAR

@@ -18,13 +18,13 @@ import logging
 import os
 import signal
 
-import ari
 import structlog
 from opentelemetry import trace
 from opentelemetry.instrumentation.aiohttp_client import AioHttpClientInstrumentor
 
 # Import the new call handler (to be created)
 from app.audio.stream import CallHandler
+from app.utils.ari_client import AriClient
 
 # --- Configuration ---
 # Configure logging
@@ -51,7 +51,7 @@ tracer = trace.get_tracer(__name__)
 ARI_URL = os.getenv("ARI_URL", "http://localhost:8088/")
 ARI_USERNAME = os.getenv("ARI_USERNAME", "ai_user")
 ARI_PASSWORD = os.getenv("ARI_PASSWORD", "supersecret")
-ARI_APP_NAME = "ai_app"  # Must match the Stasis app name in extensions.conf
+ARI_APP_NAME = os.getenv("ARI_APP_NAME", "voip-ai-agent") # Must match the Stasis app name in extensions.conf
 
 # A placeholder for the call handler class that will be implemented in stream.py
 async def on_stasis_start(channel, event):
@@ -84,7 +84,7 @@ async def main():
     while not shutdown_event.is_set():
         try:
             log.info("Connecting to ARI...", url=ARI_URL, app=ARI_APP_NAME)
-            async with ari.connect(ARI_URL, ARI_USERNAME, ARI_PASSWORD) as client:
+            async with AriClient(ARI_URL, ARI_USERNAME, ARI_PASSWORD, ARI_APP_NAME) as client:
                 log.info("ARI connection successful. Listening for calls.")
                 
                 # Subscribe to the StasisStart event for our app

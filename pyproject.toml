@@ -1,0 +1,44 @@
+[tool.poetry]
+name = "voip-ai-agent-app"
+version = "0.1.0"
+description = "VoIP AI Agent - App Service (NLP/VoIP/Agent)"
+authors = ["Gemini AI Engineer <gemini@google.com>"]
+readme = "README.md"
+
+[[tool.poetry.source]]
+name = "pytorch_cu121"
+url = "https://download.pytorch.org/whl/cu121"
+priority = "explicit"
+
+[tool.poetry.dependencies]
+python = "~3.11"
+torch = {version = "2.5.1", source = "pytorch_cu121"}
+torchvision = {version = "0.20.1", source = "pytorch_cu121"}
+torchaudio = {version = "2.5.1", source = "pytorch_cu121"}
+unsloth = {version = "*", extras = ["cu121-torch251"]}
+langgraph = "0.2.24"
+langchain = "0.3.2"
+google-cloud-speech = "2.26.0"
+aiohttp = "3.10.5"
+websockets = "12.0"
+numpy = "1.26.4"
+omegaconf = "2.3.0"
+pandas = "2.2.2"
+scipy = "1.14.1"
+onnxruntime-gpu = "1.17.1"
+pyyaml = "6.0.2"
+python-dotenv = "1.0.1"
+pydub = "0.25.1"
+structlog = "24.1.0"
+uvloop = "0.20.0"
+transformers = "4.36.2"
+huggingface-hub = "0.22.2"
+datasets = "2.14.7"
+pyarrow = "12.0.1"
+opentelemetry-distro = "0.46b0"
+opentelemetry-instrumentation-aiohttp-client = "0.46b0"
+llama-cpp-python = "0.2.90"
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"

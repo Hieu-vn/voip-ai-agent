@@ -7,8 +7,18 @@ responses from the LLM.
 """
 import torch
 import structlog
-from transformers import pipeline, Pipeline
 from typing import Optional
+
+try:  # transformers is optional; fall back to neutral sentiment if unavailable
+    from transformers import pipeline, Pipeline
+except Exception:  # pragma: no cover - optional dependency
+    pipeline = None
+    Pipeline = None
+    import warnings
+    warnings.warn(
+        "transformers pipeline unavailable; EmotionAnalyzer will return neutral.",
+        RuntimeWarning,
+    )
 
 log = structlog.get_logger()
 
@@ -24,6 +34,9 @@ class EmotionAnalyzer:
         """
         self.model_name = model_name
         self.pipeline: Optional[Pipeline] = None
+        if pipeline is None:
+            log.warning("Transformers pipeline unavailable; EmotionAnalyzer will return neutral.", model=model_name)
+            return
         try:
             device = 0 if torch.cuda.is_available() else -1
             self.pipeline = pipeline(

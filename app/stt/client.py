@@ -13,10 +13,11 @@ Key Features:
 """
 import asyncio
 import os
+from typing import Awaitable, Callable, Optional
+
 import structlog
-from google.cloud import speech_v2
 from google.api_core import exceptions as google_exceptions
-from typing import Callable, Awaitable
+from google.cloud import speech_v2
 
 log = structlog.get_logger()
 
@@ -26,7 +27,11 @@ SttCallback = Callable[[str, bool], Awaitable[None]]
 class SttClient:
     """A streaming client for the Google Cloud STT v2 API."""
 
-    def __init__(self, on_result_callback: SttCallback):
+    def __init__(
+        self,
+        on_result_callback: SttCallback,
+        on_voice_event_callback: Optional[Callable[[str], Awaitable[None]]] = None,
+    ):
         """
         Initializes the STT client.
 
@@ -34,9 +39,12 @@ class SttClient:
             on_result_callback: An async function to call with transcription results.
                                 It receives two arguments: the transcript (str) and
                                 a boolean indicating if the result is final (bool).
+            on_voice_event_callback: Optional async callback fired when voice
+                                     activity events (e.g., barge-in) are received.
         """
         self.client = speech_v2.SpeechAsyncClient()
         self.on_result = on_result_callback
+        self.on_voice_event = on_voice_event_callback
         self.audio_queue = asyncio.Queue()
         self.is_active = False
         self._streaming_task: Optional[asyncio.Task] = None
@@ -64,10 +72,21 @@ class SttClient:
             ),
         )
 
+    def set_result_callback(self, callback: SttCallback) -> None:
+        self.on_result = callback
+
+    def set_voice_event_callback(
+        self, callback: Optional[Callable[[str], Awaitable[None]]]
+    ) -> None:
+        self.on_voice_event = callback
+
     async def _request_generator(self):
         """Generator that yields audio chunks from the queue to the API."""
         # The first request must contain the configuration
-        yield speech_v2.StreamingRecognizeRequest(recognizer=self.recognizer_name, streaming_config=self.streaming_config)
+        yield speech_v2.StreamingRecognizeRequest(
+            recognizer=self.recognizer_name,
+            streaming_config=self.streaming_config,
+        )
 
         # Subsequent requests contain the audio data
         while self.is_active:
@@ -85,6 +104,23 @@ class SttClient:
             async for response in stream:
                 if not self.is_active:
                     break
+
+                if (
+                    self.on_voice_event
+                    and response.speech_event_type
+                    != speech_v2.StreamingRecognizeResponse.SpeechEventType.SPEECH_EVENT_TYPE_UNSPECIFIED
+                ):
+                    event_name = speech_v2.StreamingRecognizeResponse.SpeechEventType(
+                        response.speech_event_type
+                    ).name
+                    try:
+                        await self.on_voice_event(event_name)
+                    except Exception as callback_error:  # pragma: no cover - defensive
+                        log.warning(
+                            "STT voice event callback failed",
+                            exc_info=callback_error,
+                            event_name=event_name,
+                        )
                 
                 # Process transcription results
                 for result in response.results:

@@ -51,7 +51,7 @@ try:
     print("Pre-downloading NeMo FastPitch model...")
     FastPitchModel.from_pretrained("tts_en_fastpitch")
     print("Pre-downloading NeMo HiFiGAN model...")
-    HifiGanModel.from_pretrained("tts_hifigan")
+    HifiGanModel.from_pretrained("nvidia/tts_hifigan")
     print("NeMo models pre-downloaded successfully.")
 except Exception as e:
     print(f"Warning: Failed to pre-download NeMo models: {e}")

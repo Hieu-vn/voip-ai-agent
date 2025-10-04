@@ -105,11 +105,16 @@ def load_models():
 
     # Load Vocoder (HiFiGAN)
     try:
-        if vocoder_path and os.path.exists(vocoder_path):
+        if vocoder_path and os.path.exists(vocoder_path) and os.path.getsize(vocoder_path) > 0:
             log.info(f"Loading HiFiGAN from local file: {vocoder_path}")
             app_state.vocoder = HifiGanModel.restore_from(vocoder_path, map_location=app_state.device)
         else:
-            model_name = os.getenv("VOCODER_MODEL_NAME", "tts_hifigan") # Fallback to default pretrained name
+            if vocoder_path:
+                log.warning(
+                    "HiFiGAN path missing or empty, falling back to pretrained download.",
+                    configured_path=vocoder_path,
+                )
+            model_name = os.getenv("VOCODER_MODEL_NAME", "nvidia/tts_hifigan")  # fallback name
             log.info(f"Loading HiFiGAN from pretrained model: {model_name}")
             app_state.vocoder = HifiGanModel.from_pretrained(model_name, map_location=app_state.device)
         app_state.vocoder.eval()
@@ -192,18 +197,17 @@ async def audio_synthesis_generator(text: str, request_id: str):
             try:
                 import librosa
                 audio_resampled = librosa.resample(
-                    y=audio_native.cpu().numpy().squeeze(),
-                    orig_sr=native_sr,
-                    target_sr=TARGET_SAMPLE_RATE
-                )
-                span.set_attribute("resampler", "librosa")
-            except ImportError:
-                # Fallback if librosa is not installed (lower quality)
-                from scipy.signal import resample
-                num_samples = int(len(audio_native.squeeze()) * TARGET_SAMPLE_RATE / native_sr)
-                audio_resampled = resample(audio_native.cpu().numpy().squeeze(), num_samples)
-                span.set_attribute("resampler", "scipy")
-
+                                    y=audio_native.cpu().detach().numpy().squeeze(),
+                                    orig_sr=native_sr,
+                                    target_sr=TARGET_SAMPLE_RATE
+                                )
+                                span.set_attribute("resampler", "librosa")
+                            except ImportError:
+                                # Fallback if librosa is not installed (lower quality)
+                                from scipy.signal import resample
+                                num_samples = int(len(audio_native.squeeze()) * TARGET_SAMPLE_RATE / native_sr)
+                                audio_resampled = resample(audio_native.cpu().detach().numpy().squeeze(), num_samples)
+                                span.set_attribute("resampler", "scipy")
         synthesis_duration = (time.perf_counter() - synthesis_start_time) * 1000
         log.info("Synthesis complete", duration_ms=synthesis_duration, request_id=request_id)
 
@@ -259,4 +263,4 @@ if __name__ == "__main__":
     import uvicorn
     # Note: For production, run with `opentelemetry-instrument python -m uvicorn ...`
     # as recommended in the user's analysis.
-    uvicorn.run(app, host="0.0.0.0", port=8001, log_level="info")
+    uvicorn.run(app, host="0.0.0.0", port=int(os.getenv("TTS_SERVER_PORT", 5002)), log_level="info")
